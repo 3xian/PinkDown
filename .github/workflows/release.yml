@@ -18,7 +18,7 @@ jobs:
         include:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: pinkdown-windows-x64.exe
+            artifact: pinkdown-windows-x64-setup.exe
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: pinkdown-macos-arm64
@@ -35,15 +35,26 @@ jobs:
         with:
           key: release-${{ matrix.target }}
       - run: cargo build --release --target ${{ matrix.target }}
-      - name: Package binary
+      - name: Build Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install innosetup --no-progress -y
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object name -eq 'pinkdown').version
+          $source = (Resolve-Path "target/${{ matrix.target }}/release/pinkdown.exe").Path
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          & $iscc "/DMyAppVersion=$version" "/DMyAppExeSource=$source" installer\pinkdown.iss
+          if (!(Test-Path 'dist\pinkdown-windows-x64-setup.exe')) {
+            throw 'Inno Setup did not create the expected Windows installer'
+          }
+      - name: Package macOS binary
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           mkdir dist
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            cp target/${{ matrix.target }}/release/pinkdown.exe dist/${{ matrix.artifact }}
-          else
-            cp target/${{ matrix.target }}/release/pinkdown dist/${{ matrix.artifact }}
-          fi
+          cp target/${{ matrix.target }}/release/pinkdown dist/${{ matrix.artifact }}
       - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}

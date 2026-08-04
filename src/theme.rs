@@ -108,6 +108,8 @@ pub fn configure_preview(ui: &mut egui::Ui) {
     // continue to come from the single global Rosé Pine palette above.
     style.visuals.extreme_bg_color = SURFACE;
     style.visuals.code_bg_color = HIGHLIGHT_MED;
+    style.visuals.faint_bg_color = HIGHLIGHT_LOW;
+    style.visuals.widgets.open.fg_stroke.color = IRIS;
     style.text_styles.insert(
         egui::TextStyle::Body,
         FontId::new(CONTENT_FONT_SIZE, FontFamily::Proportional),
@@ -124,6 +126,19 @@ pub fn configure_preview(ui: &mut egui::Ui) {
         egui::TextStyle::Small,
         FontId::new(12.0, FontFamily::Proportional),
     );
+    for (name, size) in [
+        ("Heading1", 26.0),
+        ("Heading2", 21.0),
+        ("Heading3", 17.0),
+        ("Heading4", 16.0),
+        ("Heading5", 15.0),
+        ("Heading6", 14.0),
+    ] {
+        style.text_styles.insert(
+            egui::TextStyle::Name(name.into()),
+            FontId::new(size, FontFamily::Proportional),
+        );
+    }
     style.spacing.item_spacing.y = 6.0;
     style.spacing.indent = 20.0;
     style.wrap_mode = Some(egui::TextWrapMode::Wrap);

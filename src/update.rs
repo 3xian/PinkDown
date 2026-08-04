@@ -12,7 +12,7 @@ const GITHUB_TAGS_URL: &str = "https://api.github.com/repos/3xian/PinkDown/tags?
 #[cfg(target_os = "windows")]
 const GITHUB_RELEASES_URL: &str = "https://github.com/3xian/PinkDown/releases/download";
 #[cfg(target_os = "windows")]
-const WINDOWS_RELEASE_ASSET: &str = "pinkdown-windows-x64.exe";
+const WINDOWS_RELEASE_ASSET: &str = "pinkdown-windows-x64-setup.exe";
 
 #[derive(Debug)]
 pub struct UpdateError(String);
@@ -151,7 +151,7 @@ fn download_windows_update(tag: &str) -> Result<std::path::PathBuf, UpdateError>
         .ok_or_else(|| UpdateError::new("Release checksum is missing or invalid"))?
         .to_ascii_lowercase();
     let destination =
-        std::env::temp_dir().join(format!("pinkdown-{tag}-{}.exe", std::process::id()));
+        std::env::temp_dir().join(format!("pinkdown-{tag}-{}-setup.exe", std::process::id()));
 
     let result = (|| {
         let response = ureq::get(&asset_url)
@@ -245,12 +245,10 @@ fn schedule_windows_update(downloaded: &std::path::Path) -> Result<(), UpdateErr
     let script = temp.join(format!("pinkdown-update-{process_id}.ps1"));
     let ready = temp.join(format!("pinkdown-update-{process_id}.ready"));
     let log = temp.join(format!("pinkdown-update-{process_id}.log"));
-    let backup = current.with_extension("pinkdown-backup.exe");
     let _ = fs::remove_file(&ready);
 
-    let script_text = windows_update_script(
-        process_id, downloaded, &current, &backup, &ready, &log, &script,
-    );
+    let script_text =
+        windows_update_script(process_id, downloaded, &current, &ready, &log, &script);
     fs::write(&script, script_text)
         .map_err(|error| UpdateError::new(format!("Could not prepare updater: {error}")))?;
 
@@ -290,9 +288,8 @@ fn schedule_windows_update(downloaded: &std::path::Path) -> Result<(), UpdateErr
 #[cfg(target_os = "windows")]
 fn windows_update_script(
     parent_id: u32,
-    downloaded: &std::path::Path,
+    installer: &std::path::Path,
     current: &std::path::Path,
-    backup: &std::path::Path,
     ready: &std::path::Path,
     log: &std::path::Path,
     script: &std::path::Path,
@@ -302,33 +299,29 @@ fn windows_update_script(
     [
         "$ErrorActionPreference = 'Stop'".to_owned(),
         format!("$parentId = {parent_id}"),
-        format!("$downloaded = {}", quoted(downloaded)),
+        format!("$installer = {}", quoted(installer)),
         format!("$current = {}", quoted(current)),
-        format!("$backup = {}", quoted(backup)),
+        "$installDir = Split-Path -Parent $current".to_owned(),
         format!("$ready = {}", quoted(ready)),
         format!("$log = {}", quoted(log)),
         format!("$script = {}", quoted(script)),
-        "$started = $false".to_owned(),
         "try {".to_owned(),
         "    Set-Content -LiteralPath $ready -Value 'ready' -Encoding ascii".to_owned(),
         "    $parent = Get-Process -Id $parentId -ErrorAction SilentlyContinue".to_owned(),
         "    if ($parent) { Wait-Process -Id $parentId }".to_owned(),
-        "    if (Test-Path -LiteralPath $backup) { Remove-Item -LiteralPath $backup -Force }"
+        "    $installArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR=\"' + $installDir + '\"'))".to_owned(),
+        "    $setup = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru"
             .to_owned(),
-        "    Move-Item -LiteralPath $current -Destination $backup -Force".to_owned(),
-        "    Move-Item -LiteralPath $downloaded -Destination $current -Force".to_owned(),
+        "    if ($setup.ExitCode -ne 0) { throw \"Installer exited with code $($setup.ExitCode)\" }"
+            .to_owned(),
+        "    if (!(Test-Path -LiteralPath $current)) { throw 'Installed application was not found' }"
+            .to_owned(),
         "    Start-Process -FilePath $current".to_owned(),
-        "    $started = $true".to_owned(),
-        "    Remove-Item -LiteralPath $backup -Force".to_owned(),
+        "    Remove-Item -LiteralPath $installer -Force".to_owned(),
         "    if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force }".to_owned(),
         "} catch {".to_owned(),
         "    ($_ | Out-String) | Set-Content -LiteralPath $log".to_owned(),
-        "    if (Test-Path -LiteralPath $backup) {".to_owned(),
-        "        if (Test-Path -LiteralPath $current) { Remove-Item -LiteralPath $current -Force }"
-            .to_owned(),
-        "        Move-Item -LiteralPath $backup -Destination $current -Force".to_owned(),
-        "    }".to_owned(),
-        "    if (!$started -and (Test-Path -LiteralPath $current)) { Start-Process -FilePath $current }"
+        "    if (Test-Path -LiteralPath $current) { Start-Process -FilePath $current }"
             .to_owned(),
         "} finally {".to_owned(),
         "    if (Test-Path -LiteralPath $ready) { Remove-Item -LiteralPath $ready -Force }".to_owned(),
@@ -361,21 +354,23 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn installer_script_has_handoff_backup_and_recovery() {
+    fn installer_script_waits_then_runs_setup_in_the_existing_directory() {
         use std::path::Path;
 
         let script = windows_update_script(
             42,
-            Path::new("download.exe"),
+            Path::new("pinkdown-setup.exe"),
             Path::new("current.exe"),
-            Path::new("backup.exe"),
             Path::new("ready"),
             Path::new("error.log"),
             Path::new("update.ps1"),
         );
         assert!(script.contains("Set-Content -LiteralPath $ready"));
-        assert!(script.contains("Move-Item -LiteralPath $current -Destination $backup"));
-        assert!(script.contains("Move-Item -LiteralPath $backup -Destination $current"));
+        assert!(script.contains("Wait-Process -Id $parentId"));
+        assert!(script.contains("Start-Process -FilePath $installer"));
+        assert!(script.contains("'/DIR=\"' + $installDir + '\"'"));
+        assert!(script.contains("if ($setup.ExitCode -ne 0)"));
+        assert!(script.contains("Start-Process -FilePath $current"));
         assert!(script.contains("Set-Content -LiteralPath $log"));
     }
 }

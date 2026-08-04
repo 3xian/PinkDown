@@ -789,8 +789,6 @@ dependencies = [
 [[package]]
 name = "egui_commonmark"
 version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26c9caff9c964af1e3d913acd85e86d2170e3169a43cf4ff84eea3106691c14d"
 dependencies = [
  "egui",
  "egui_commonmark_backend",
@@ -2107,12 +2105,13 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinkdown"
-version = "1.0.1"
+version = "1.1.0"
 dependencies = [
  "chardetng",
  "eframe",
  "egui_commonmark",
  "encoding_rs",
+ "pulldown-cmark",
  "raw-window-handle",
  "rfd",
  "semver",

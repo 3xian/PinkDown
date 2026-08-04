@@ -1,15 +1,20 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
+mod dialog;
 mod document;
+mod preview;
 mod theme;
 mod update;
 mod window;
+
+use std::path::PathBuf;
 
 use app::PinkDown;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {
+    let initial_path = std::env::args_os().nth(1).map(PathBuf::from);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("PinkDown")
@@ -26,6 +31,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "PinkDown",
         options,
-        Box::new(|cc| Ok(Box::new(PinkDown::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(PinkDown::new(cc, initial_path)))),
     )
 }

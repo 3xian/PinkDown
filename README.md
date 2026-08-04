@@ -19,15 +19,15 @@ PinkDown is a focused, native Markdown editor and reader built in Rust. It pairs
 1. Launch the application and write in the left pane; the preview on the right updates as you type.
 2. Select **Open** or drag a Markdown file into the window to edit an existing document.
 3. Select **Save** to write changes to the current file, or **Save as** to choose a new location.
-4. Use **Check updates** to compare the installed version against the latest GitHub tag. If a newer Windows release is available, PinkDown downloads its executable, verifies the published SHA-256 checksum, replaces the current executable, and restarts.
+4. Use **Check updates** to compare the installed version against the latest GitHub tag. If a newer Windows release is available, PinkDown downloads the installer, verifies its published SHA-256 checksum, and runs it after PinkDown closes.
 
-Automatic installation requires permission to replace the running executable. Install PinkDown in a user-writable directory rather than a protected system location.
+The Windows installer installs PinkDown for the current user and associates `.md` files with PinkDown, so Markdown documents can be opened by double-clicking them.
 
 ## Downloads and updates
 
-Official builds are published on the [GitHub Releases page](https://github.com/3xian/PinkDown/releases). Each release contains platform binaries plus SHA-256 checksum files.
+Official builds are published on the [GitHub Releases page](https://github.com/3xian/PinkDown/releases). Windows is distributed as `pinkdown-windows-x64-setup.exe`; macOS releases remain standalone binaries. Every download includes a SHA-256 checksum file.
 
-The in-app updater currently installs `pinkdown-windows-x64.exe`. On macOS, release binaries can be downloaded manually from GitHub; automatic installation is intentionally limited to Windows for now.
+The in-app updater downloads and runs `pinkdown-windows-x64-setup.exe`. On macOS, release binaries can be downloaded manually from GitHub; automatic installation is intentionally limited to Windows for now.
 
 ## Run from source
 
@@ -56,14 +56,14 @@ Compiled binaries are written to `target/<target>/release/`.
 
 ## Publishing a release
 
-The release workflow runs whenever a semantic-version tag is pushed. It builds Windows x64, macOS Apple Silicon, and macOS Intel binaries; creates a GitHub Release; and attaches every binary with a SHA-256 checksum sidecar.
+The release workflow runs whenever a semantic-version tag is pushed. It builds the Windows x64 installer plus macOS Apple Silicon and Intel binaries, creates a GitHub Release, and attaches every artifact with a SHA-256 checksum sidecar.
 
 ```bash
 git tag v1.0.0
 git push origin v1.0.0
 ```
 
-The Windows artifact must retain the name `pinkdown-windows-x64.exe`, since that is the asset verified and installed by the in-app updater.
+The Windows artifact must retain the name `pinkdown-windows-x64-setup.exe`, since that is the asset verified and installed by the in-app updater.
 
 ## License
 
