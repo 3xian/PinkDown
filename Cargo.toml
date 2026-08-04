@@ -1,6 +1,6 @@
 [package]
 name = "pinkdown"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 authors = ["PinkDown"]
 description = "A polished, native Markdown reader and editor in Rust."
@@ -10,6 +10,7 @@ license = "MIT"
 chardetng = "0.1"
 encoding_rs = "0.8"
 eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+egui_commonmark = { version = "0.21.1", default-features = false, features = ["pulldown_cmark"] }
 rfd = "0.15"
 semver = "1"
 serde = { version = "1", features = ["derive"] }

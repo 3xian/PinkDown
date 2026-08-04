@@ -787,6 +787,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "egui_commonmark"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26c9caff9c964af1e3d913acd85e86d2170e3169a43cf4ff84eea3106691c14d"
+dependencies = [
+ "egui",
+ "egui_commonmark_backend",
+ "egui_extras",
+ "pulldown-cmark",
+]
+
+[[package]]
+name = "egui_commonmark_backend"
+version = "0.21.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6e317aa4031f27be77d4c1c33cb038cdf02d77790c28e5cf1283a66cceb88695"
+dependencies = [
+ "egui",
+ "egui_extras",
+ "pulldown-cmark",
+]
+
+[[package]]
+name = "egui_extras"
+version = "0.32.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dddbceddf39805fc6c62b1f7f9c05e23590b40844dc9ed89c6dc6dbc886e3e3b"
+dependencies = [
+ "ahash",
+ "egui",
+ "enum-map",
+ "log",
+ "profiling",
+]
+
+[[package]]
 name = "egui_glow"
 version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -827,6 +863,26 @@ name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "66b7e2430c6dff6a955451e2cfc438f09cea1965a9d6f87f7e3b90decc014099"
+
+[[package]]
+name = "enum-map"
+version = "2.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6866f3bfdf8207509a033af1a75a7b08abda06bbaaeae6669323fd5a097df2e9"
+dependencies = [
+ "enum-map-derive",
+]
+
+[[package]]
+name = "enum-map-derive"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f282cfdfe92516eb26c2af8589c274c7c17681f5ecc03c18255fe741c6aa64eb"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "enumflags2"
@@ -2051,10 +2107,11 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "pinkdown"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "chardetng",
  "eframe",
+ "egui_commonmark",
  "encoding_rs",
  "raw-window-handle",
  "rfd",
@@ -2168,6 +2225,17 @@ name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
+
+[[package]]
+name = "pulldown-cmark"
+version = "0.13.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e9f068eba8e7071c5f9511831b44f32c740d5adf574e990f946ddb53db2f314e"
+dependencies = [
+ "bitflags 2.13.1",
+ "memchr",
+ "unicase",
+]
 
 [[package]]
 name = "pxfm"
@@ -2880,6 +2948,12 @@ dependencies = [
  "tempfile",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "unicase"
+version = "2.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
 
 [[package]]
 name = "unicode-ident"
