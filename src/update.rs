@@ -359,7 +359,7 @@ mod tests {
         assert!(installer.contains("Software\\Classes\\.md\\OpenWithProgids"));
         assert!(installer.contains("Software\\RegisteredApplications"));
         assert!(installer.contains("registeredAppUser=PinkDown"));
-        assert!(installer.contains("Tasks: associate-md"));
+        assert!(installer.contains("Tasks: associate_md"));
         assert!(installer.contains("{#MyAppExeName}\"\" \"\"%1"));
     }
 

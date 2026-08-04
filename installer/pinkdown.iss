@@ -42,11 +42,11 @@ Source: "{#MyAppExeSource}"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flag
 Name: "{autoprograms}\PinkDown"; Filename: "{app}\{#MyAppExeName}"
 
 [Tasks]
-Name: "associate-md"; Description: "Set PinkDown as the default app for .md files"; GroupDescription: "File associations:"; Flags: checkedonce
+Name: "associate_md"; Description: "Set PinkDown as the default app for .md files"; GroupDescription: "File associations:"; Flags: checkedonce
 
 [Registry]
-Root: HKA; Subkey: "Software\Classes\.md"; ValueType: string; ValueName: ""; ValueData: "{#MarkdownProgId}"; Flags: uninsdeletevalue; Tasks: associate-md
-Root: HKA; Subkey: "Software\Classes\.md\OpenWithProgids"; ValueType: string; ValueName: "{#MarkdownProgId}"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associate-md
+Root: HKA; Subkey: "Software\Classes\.md"; ValueType: string; ValueName: ""; ValueData: "{#MarkdownProgId}"; Flags: uninsdeletevalue; Tasks: associate_md
+Root: HKA; Subkey: "Software\Classes\.md\OpenWithProgids"; ValueType: string; ValueName: "{#MarkdownProgId}"; ValueData: ""; Flags: uninsdeletevalue; Tasks: associate_md
 Root: HKA; Subkey: "Software\Classes\{#MarkdownProgId}"; ValueType: string; ValueName: ""; ValueData: "Markdown Document"; Flags: uninsdeletekey
 Root: HKA; Subkey: "Software\Classes\{#MarkdownProgId}\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"
 Root: HKA; Subkey: "Software\Classes\{#MarkdownProgId}\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""
@@ -56,5 +56,5 @@ Root: HKA; Subkey: "Software\PinkDown\Capabilities\FileAssociations"; ValueType:
 Root: HKA; Subkey: "Software\RegisteredApplications"; ValueType: string; ValueName: "PinkDown"; ValueData: "Software\PinkDown\Capabilities"; Flags: uninsdeletevalue
 
 [Run]
-Filename: "ms-settings:defaultapps?registeredAppUser=PinkDown"; Description: "Confirm PinkDown as the default app for .md files"; Flags: shellexec postinstall skipifsilent nowait; Tasks: associate-md
+Filename: "ms-settings:defaultapps?registeredAppUser=PinkDown"; Description: "Confirm PinkDown as the default app for .md files"; Flags: shellexec postinstall skipifsilent nowait; Tasks: associate_md
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch PinkDown"; Flags: nowait postinstall skipifsilent
