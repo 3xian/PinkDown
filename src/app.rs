@@ -480,7 +480,7 @@ fn window_button(ui: &mut egui::Ui, kind: WindowButton, tooltip: &str) -> egui::
     } else {
         SUBTLE
     };
-    let stroke = egui::Stroke::new(1.3, color);
+    let stroke = egui::Stroke::new(1.3_f32, color);
     let center = rect.center();
     match kind {
         WindowButton::Minimize => ui.painter().line_segment(

@@ -6,7 +6,7 @@ use crate::theme::{self, BASE, HIGHLIGHT_LOW, MUTED};
 pub fn panel(ui: &mut egui::Ui, source: &str, cache: &mut CommonMarkCache) {
     egui::Frame::new()
         .fill(BASE)
-        .stroke(egui::Stroke::new(1.0, HIGHLIGHT_LOW))
+        .stroke(egui::Stroke::new(1.0_f32, HIGHLIGHT_LOW))
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::symmetric(18, 16))
         .show(ui, |ui| {

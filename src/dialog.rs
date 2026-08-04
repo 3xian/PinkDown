@@ -14,7 +14,7 @@ pub enum Choice {
 pub fn unsaved_changes(ctx: &egui::Context, document_name: &str, message: &str) -> Option<Choice> {
     let frame = egui::Frame::new()
         .fill(SURFACE)
-        .stroke(egui::Stroke::new(1.0, HIGHLIGHT_MED))
+        .stroke(egui::Stroke::new(1.0_f32, HIGHLIGHT_MED))
         .corner_radius(egui::CornerRadius::same(16))
         .inner_margin(egui::Margin::symmetric(26, 24))
         .shadow(egui::Shadow {
@@ -53,7 +53,7 @@ fn heading(ui: &mut egui::Ui, document_name: &str) {
         ui.painter().circle_stroke(
             icon_rect.center(),
             18.5,
-            egui::Stroke::new(1.0, GOLD.gamma_multiply(0.55)),
+            egui::Stroke::new(1.0_f32, GOLD.gamma_multiply(0.55)),
         );
         ui.painter().text(
             icon_rect.center(),
@@ -131,14 +131,14 @@ fn button(ui: &mut egui::Ui, label: &str, width: f32, kind: ButtonKind) -> egui:
                 LOVE.gamma_multiply(0.28),
                 LOVE.gamma_multiply(0.4),
                 ROSE,
-                egui::Stroke::new(1.0, LOVE.gamma_multiply(0.55)),
+                egui::Stroke::new(1.0_f32, LOVE.gamma_multiply(0.55)),
             ),
             ButtonKind::Secondary => (
                 Color32::TRANSPARENT,
                 HIGHLIGHT_MED,
                 HIGHLIGHT_LOW,
                 SUBTLE,
-                egui::Stroke::new(1.0, HIGHLIGHT_MED),
+                egui::Stroke::new(1.0_f32, HIGHLIGHT_MED),
             ),
         };
 
