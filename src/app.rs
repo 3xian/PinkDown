@@ -451,14 +451,19 @@ fn preview_panel(ui: &mut egui::Ui, source: &str, cache: &mut CommonMarkCache) {
             ui.add_space(8.0);
             egui::Frame::NONE
                 .fill(Color32::TRANSPARENT)
-                .inner_margin(egui::Margin::symmetric(14, 8))
+                .inner_margin(egui::Margin::symmetric(16, 10))
                 .show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("preview-scroll")
                         .auto_shrink([false; 2])
                         .show(ui, |ui| {
-                            CommonMarkViewer::new().show(ui, cache, source);
-                            ui.add_space(30.0);
+                            ui.set_width(ui.available_width().max(1.0));
+
+                            ui.scope(|ui| {
+                                theme::configure_preview(ui);
+                                CommonMarkViewer::new().show(ui, cache, source);
+                            });
+                            ui.add_space(24.0);
                         });
                 });
         });

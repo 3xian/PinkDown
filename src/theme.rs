@@ -8,7 +8,6 @@ pub const OVERLAY: Color32 = Color32::from_rgb(38, 35, 58);
 pub const MUTED: Color32 = Color32::from_rgb(110, 106, 134);
 pub const SUBTLE: Color32 = Color32::from_rgb(144, 140, 170);
 pub const TEXT: Color32 = Color32::from_rgb(224, 222, 244);
-#[cfg(target_os = "windows")]
 pub const LOVE: Color32 = Color32::from_rgb(235, 111, 146);
 pub const GOLD: Color32 = Color32::from_rgb(246, 193, 119);
 pub const ROSE: Color32 = Color32::from_rgb(235, 188, 186);
@@ -50,22 +49,36 @@ pub fn configure(ctx: &egui::Context) {
     style.visuals.panel_fill = Color32::TRANSPARENT;
     style.visuals.window_fill = SURFACE;
     style.visuals.extreme_bg_color = BASE;
+    style.visuals.text_edit_bg_color = Some(SURFACE);
+    style.visuals.code_bg_color = OVERLAY;
     style.visuals.faint_bg_color = OVERLAY;
+    style.visuals.weak_text_color = Some(SUBTLE);
     style.visuals.widgets.noninteractive.bg_fill = SURFACE;
+    style.visuals.widgets.noninteractive.weak_bg_fill = BASE;
+    style.visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0, TEXT);
+    style.visuals.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, HIGHLIGHT_MED);
+    style.visuals.widgets.noninteractive.corner_radius = egui::CornerRadius::same(8);
     style.visuals.widgets.inactive.bg_fill = OVERLAY;
     style.visuals.widgets.inactive.weak_bg_fill = OVERLAY;
     style.visuals.widgets.inactive.bg_stroke = egui::Stroke::new(1.0_f32, HIGHLIGHT_MED);
+    style.visuals.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, SUBTLE);
     style.visuals.widgets.inactive.corner_radius = egui::CornerRadius::same(8);
     style.visuals.widgets.hovered.bg_fill = HIGHLIGHT_MED;
     style.visuals.widgets.hovered.weak_bg_fill = HIGHLIGHT_MED;
     style.visuals.widgets.hovered.bg_stroke = egui::Stroke::new(1.0_f32, HIGHLIGHT_HIGH);
+    style.visuals.widgets.hovered.fg_stroke = egui::Stroke::new(1.0, FOAM);
     style.visuals.widgets.hovered.corner_radius = egui::CornerRadius::same(8);
     style.visuals.widgets.active.bg_fill = HIGHLIGHT_HIGH;
     style.visuals.widgets.active.weak_bg_fill = HIGHLIGHT_HIGH;
+    style.visuals.widgets.active.bg_stroke = egui::Stroke::new(1.0, IRIS);
+    style.visuals.widgets.active.fg_stroke = egui::Stroke::new(1.0, ROSE);
     style.visuals.widgets.active.corner_radius = egui::CornerRadius::same(8);
+    style.visuals.widgets.open = style.visuals.widgets.active;
     style.visuals.selection.bg_fill = PINE;
     style.visuals.selection.stroke.color = FOAM;
     style.visuals.hyperlink_color = FOAM;
+    style.visuals.warn_fg_color = GOLD;
+    style.visuals.error_fg_color = LOVE;
     style.visuals.window_corner_radius = egui::CornerRadius::same(16);
     style.visuals.window_shadow = egui::Shadow {
         offset: [0, 8],
@@ -85,6 +98,33 @@ pub fn configure(ctx: &egui::Context) {
     );
     style.url_in_tooltip = true;
     ctx.set_style(style);
+}
+
+pub fn configure_preview(ui: &mut egui::Ui) {
+    let style = ui.style_mut();
+
+    // Code blocks sit above the preview's base background; all semantic colors
+    // continue to come from the single global Rosé Pine palette above.
+    style.visuals.extreme_bg_color = SURFACE;
+    style.text_styles.insert(
+        egui::TextStyle::Body,
+        FontId::new(16.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Heading,
+        FontId::new(29.0, FontFamily::Proportional),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Monospace,
+        FontId::new(14.0, FontFamily::Monospace),
+    );
+    style.text_styles.insert(
+        egui::TextStyle::Small,
+        FontId::new(12.0, FontFamily::Proportional),
+    );
+    style.spacing.item_spacing.y = 6.0;
+    style.spacing.indent = 20.0;
+    style.wrap_mode = Some(egui::TextWrapMode::Wrap);
 }
 
 fn configure_fonts(ctx: &egui::Context) {
