@@ -8,6 +8,7 @@ use semver::Version;
 use serde::Deserialize;
 
 const GITHUB_TAGS_URL: &str = "https://api.github.com/repos/3xian/PinkDown/tags?per_page=100";
+const PINKDOWN_USER_AGENT: &str = concat!("PinkDown/", env!("CARGO_PKG_VERSION"));
 
 #[cfg(target_os = "windows")]
 const GITHUB_RELEASES_URL: &str = "https://github.com/3xian/PinkDown/releases/download";
@@ -113,16 +114,56 @@ fn check_for_update() -> Result<UpdateOutcome, UpdateError> {
 }
 
 fn latest_github_tag() -> Result<(String, Version), UpdateError> {
-    let tags: Vec<GitHubTag> = ureq::get(GITHUB_TAGS_URL)
-        .set(
-            "User-Agent",
-            concat!("PinkDown/", env!("CARGO_PKG_VERSION")),
-        )
-        .call()
-        .map_err(|error| UpdateError::new(format!("Could not contact GitHub: {error}")))?
+    let tags: Vec<GitHubTag> = github_get(GITHUB_TAGS_URL, github_token().as_deref())?
         .into_json()
         .map_err(|error| UpdateError::new(format!("Could not read GitHub tags: {error}")))?;
     select_latest_tag(tags.into_iter().map(|tag| tag.name))
+}
+
+/// Issues a GitHub API GET with PinkDown's user agent and, when a token is
+/// supplied, bearer authentication. Rate-limited responses (403/429) are
+/// translated into an actionable message instead of a bare status code.
+fn github_get(url: &str, token: Option<&str>) -> Result<ureq::Response, UpdateError> {
+    let request = ureq::get(url).set("User-Agent", PINKDOWN_USER_AGENT);
+    let request = match token {
+        Some(token) => request.set("Authorization", &format!("Bearer {token}")),
+        None => request,
+    };
+    request.call().map_err(|error| match error {
+        ureq::Error::Status(status, response) if status == 403 || status == 429 => {
+            github_api_error(status, &response.into_string().unwrap_or_default())
+        }
+        error => UpdateError::new(format!("Could not contact GitHub: {error}")),
+    })
+}
+
+/// The GitHub token used to authenticate API requests, read from
+/// `GITHUB_TOKEN` or `GH_TOKEN`. Unauthenticated GitHub API requests are
+/// limited to 60 per hour per IP; authenticated requests get 5,000 per hour.
+fn github_token() -> Option<String> {
+    github_token_from(|name| std::env::var(name))
+}
+
+fn github_token_from(
+    var: impl Fn(&str) -> Result<String, std::env::VarError>,
+) -> Option<String> {
+    var("GITHUB_TOKEN")
+        .or_else(|_| var("GH_TOKEN"))
+        .ok()
+        .map(|token| token.trim().to_owned())
+        .filter(|token| !token.is_empty())
+}
+
+fn github_api_error(status: u16, body: &str) -> UpdateError {
+    if (status == 403 || status == 429) && body.contains("rate limit") {
+        UpdateError::new(
+            "GitHub API rate limit exceeded; set GITHUB_TOKEN or GH_TOKEN to a personal access token to raise it",
+        )
+    } else if body.trim().is_empty() {
+        UpdateError::new(format!("GitHub API returned status {status}"))
+    } else {
+        UpdateError::new(format!("GitHub API returned status {status}: {body}"))
+    }
 }
 
 fn select_latest_tag(
@@ -155,10 +196,7 @@ fn download_windows_update(tag: &str) -> Result<std::path::PathBuf, UpdateError>
 
     let result = (|| {
         let response = ureq::get(&asset_url)
-            .set(
-                "User-Agent",
-                concat!("PinkDown/", env!("CARGO_PKG_VERSION")),
-            )
+            .set("User-Agent", PINKDOWN_USER_AGENT)
             .call()
             .map_err(|error| UpdateError::new(format!("Could not download {tag}: {error}")))?;
         let mut source = response.into_reader().take(256 * 1024 * 1024 + 1);
@@ -192,10 +230,7 @@ fn download_text(url: &str) -> Result<String, UpdateError> {
     use std::io::Read;
 
     let mut response = ureq::get(url)
-        .set(
-            "User-Agent",
-            concat!("PinkDown/", env!("CARGO_PKG_VERSION")),
-        )
+        .set("User-Agent", PINKDOWN_USER_AGENT)
         .call()
         .map_err(|error| UpdateError::new(format!("Could not download checksum: {error}")))?
         .into_reader();
@@ -349,6 +384,123 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "No semantic-version tags found on GitHub"
+        );
+    }
+
+    /// Sends a tags request to a local HTTP listener and returns the
+    /// `Authorization` header it received, if any.
+    fn received_authorization(token: Option<&str>) -> Option<String> {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/tags", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut received = Vec::new();
+            let mut buffer = [0u8; 4096];
+            loop {
+                let bytes_read = stream.read(&mut buffer).unwrap();
+                if bytes_read == 0 {
+                    break;
+                }
+                received.extend_from_slice(&buffer[..bytes_read]);
+                if received.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .unwrap();
+            String::from_utf8_lossy(&received)
+                .lines()
+                .find(|line| line.to_ascii_lowercase().starts_with("authorization:"))
+                .map(str::to_owned)
+        });
+        github_get(&url, token).unwrap();
+        server.join().unwrap()
+    }
+
+    #[test]
+    fn tags_request_attaches_the_token_as_bearer_auth() {
+        let authorization = received_authorization(Some("secret-token"));
+        assert_eq!(authorization.as_deref(), Some("Authorization: Bearer secret-token"));
+    }
+
+    #[test]
+    fn tags_request_is_anonymous_without_a_token() {
+        assert_eq!(received_authorization(None), None);
+    }
+
+    #[test]
+    fn github_token_prefers_github_token_over_gh_token() {
+        let token = github_token_from(|name| match name {
+            "GITHUB_TOKEN" => Ok("primary".to_owned()),
+            "GH_TOKEN" => Ok("secondary".to_owned()),
+            _ => Err(std::env::VarError::NotPresent),
+        });
+        assert_eq!(token.as_deref(), Some("primary"));
+    }
+
+    #[test]
+    fn github_token_falls_back_to_gh_token() {
+        let token = github_token_from(|name| match name {
+            "GH_TOKEN" => Ok("secondary".to_owned()),
+            _ => Err(std::env::VarError::NotPresent),
+        });
+        assert_eq!(token.as_deref(), Some("secondary"));
+    }
+
+    #[test]
+    fn github_token_ignores_blank_values() {
+        assert_eq!(github_token_from(|_| Ok(String::new())), None);
+        assert_eq!(github_token_from(|_| Ok("  ".to_owned())), None);
+    }
+
+    #[test]
+    fn github_token_trims_whitespace_around_the_value() {
+        assert_eq!(
+            github_token_from(|_| Ok("  secret-token\n".to_owned())).as_deref(),
+            Some("secret-token")
+        );
+    }
+
+    #[test]
+    fn github_token_is_none_without_env_vars() {
+        assert_eq!(
+            github_token_from(|_| Err(std::env::VarError::NotPresent)),
+            None
+        );
+    }
+
+    #[test]
+    fn rate_limited_api_errors_explain_the_token_fix() {
+        let error = github_api_error(
+            403,
+            r#"{"message":"API rate limit exceeded for 1.2.3.4"}"#,
+        );
+        assert!(error.to_string().contains("GITHUB_TOKEN"));
+        assert!(github_api_error(429, "API rate limit exceeded")
+            .to_string()
+            .contains("GITHUB_TOKEN"));
+    }
+
+    #[test]
+    fn non_rate_limit_api_errors_report_the_status() {
+        let error = github_api_error(404, "Not Found");
+        assert_eq!(
+            error.to_string(),
+            "GitHub API returned status 404: Not Found"
+        );
+    }
+
+    #[test]
+    fn api_errors_without_a_body_report_only_the_status() {
+        assert_eq!(
+            github_api_error(403, "").to_string(),
+            "GitHub API returned status 403"
         );
     }
 

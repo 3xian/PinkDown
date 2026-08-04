@@ -33,6 +33,8 @@ Official builds are published on the [GitHub Releases page](https://github.com/3
 
 The in-app updater downloads and runs `pinkdown-windows-x64-setup.exe`. On macOS, download the matching archive manually, extract it, and move `PinkDown.app` to Applications; automatic installation is intentionally limited to Windows for now.
 
+GitHub's API limits unauthenticated requests to 60 per hour per IP, which shared VPN or NAT exit addresses can exhaust. If **Check updates** reports a rate-limit error, set a personal access token so PinkDown authenticates against the API (5,000 requests per hour): create a token at GitHub → Settings → Developer settings → Personal access tokens (a classic token with `repo` scope is enough), then set the `GITHUB_TOKEN` or `GH_TOKEN` environment variable for your user and restart PinkDown. If you use the GitHub CLI, `gh auth token` prints the token `gh` already stores.
+
 ## Run from source
 
 Install the stable Rust toolchain, then run:
