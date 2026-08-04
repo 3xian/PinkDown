@@ -289,8 +289,8 @@ impl PinkDown {
                         }
                     }
 
+                    #[cfg(target_os = "windows")]
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        #[cfg(target_os = "windows")]
                         window_controls(ui, ctx, self);
                     });
                 });
