@@ -60,17 +60,6 @@ cargo build --release --target x86_64-apple-darwin
 
 Compiled binaries are written to `target/<target>/release/`.
 
-## Publishing a release
-
-The release workflow runs whenever a semantic-version tag is pushed. It builds the Windows x64 installer plus native macOS `.app` bundles for Apple Silicon and Intel, creates a GitHub Release, and attaches every artifact with a SHA-256 checksum sidecar.
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The Windows artifact must retain the name `pinkdown-windows-x64-setup.exe`, since that is the asset verified and installed by the in-app updater.
-
 ## License
 
 MIT
