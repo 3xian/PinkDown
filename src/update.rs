@@ -352,6 +352,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn windows_installer_registers_markdown_and_opens_default_apps_confirmation() {
+        let installer = include_str!("../installer/pinkdown.iss");
+
+        assert!(installer.contains("Software\\Classes\\.md\\OpenWithProgids"));
+        assert!(installer.contains("Software\\RegisteredApplications"));
+        assert!(installer.contains("registeredAppUser=PinkDown"));
+        assert!(installer.contains("Tasks: associate-md"));
+        assert!(installer.contains("{#MyAppExeName}\"\" \"\"%1"));
+    }
+
+    #[test]
+    fn mac_release_packages_an_app_bundle_with_a_retina_icon() {
+        let plist = include_str!("../installer/macos/Info.plist");
+        let packager = include_str!("../installer/macos/package.ps1");
+        let workflow = include_str!("../.github/workflows/release.yml");
+
+        assert!(plist.contains("<key>CFBundlePackageType</key>"));
+        assert!(plist.contains("<string>APPL</string>"));
+        assert!(plist.contains("<key>CFBundleIconFile</key>"));
+        assert!(plist.contains("<string>PinkDown.icns</string>"));
+        assert!(packager.contains("icon_16x16.png"));
+        assert!(packager.contains("icon_512x512@2x.png"));
+        assert!(workflow.contains("pinkdown-macos-arm64.zip"));
+        assert!(workflow.contains("pinkdown-macos-x64.zip"));
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn installer_script_waits_then_runs_setup_in_the_existing_directory() {

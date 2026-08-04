@@ -20,25 +20,19 @@ pub const HIGHLIGHT_HIGH: Color32 = Color32::from_rgb(82, 79, 103);
 pub const CONTENT_FONT_SIZE: f32 = 13.0;
 
 pub fn icon_data() -> egui::IconData {
-    let mut rgba = Vec::with_capacity(64 * 64 * 4);
-    for y in 0..64_u32 {
-        for x in 0..64_u32 {
-            let inside = x > 8 && x < 56 && y > 6 && y < 58;
-            let fold = x > 42 && y < 22;
-            let color = if inside && !fold {
-                [235, 111, 146, 255]
-            } else if fold {
-                [246, 193, 119, 255]
-            } else {
-                [25, 23, 36, 255]
-            };
-            rgba.extend_from_slice(&color);
-        }
-    }
+    #[cfg(target_os = "macos")]
+    const ICON_BYTES: &[u8] = include_bytes!("../assets/pinkdown-macos-icon.png");
+    #[cfg(not(target_os = "macos"))]
+    const ICON_BYTES: &[u8] = include_bytes!("../assets/pinkdown-icon.png");
+
+    let image = image::load_from_memory_with_format(ICON_BYTES, image::ImageFormat::Png)
+        .expect("decode the embedded PinkDown icon")
+        .resize_exact(64, 64, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
     egui::IconData {
-        rgba,
-        width: 64,
-        height: 64,
+        rgba: image.into_raw(),
+        width: 64_u32,
+        height: 64_u32,
     }
 }
 

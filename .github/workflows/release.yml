@@ -21,10 +21,10 @@ jobs:
             artifact: pinkdown-windows-x64-setup.exe
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: pinkdown-macos-arm64
+            artifact: pinkdown-macos-arm64.zip
           - os: macos-15-intel
             target: x86_64-apple-darwin
-            artifact: pinkdown-macos-x64
+            artifact: pinkdown-macos-x64.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
@@ -49,16 +49,20 @@ jobs:
           if (!(Test-Path 'dist\pinkdown-windows-x64-setup.exe')) {
             throw 'Inno Setup did not create the expected Windows installer'
           }
-      - name: Package macOS binary
+      - name: Package macOS app bundle
         if: runner.os != 'Windows'
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir dist
-          cp target/${{ matrix.target }}/release/pinkdown dist/${{ matrix.artifact }}
+          $metadata = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+          $version = ($metadata.packages | Where-Object name -eq 'pinkdown').version
+          ./installer/macos/package.ps1 `
+            -Binary "target/${{ matrix.target }}/release/pinkdown" `
+            -ArtifactName "${{ matrix.artifact }}" `
+            -Version $version
       - uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.artifact }}
-          path: dist/
+          path: dist/${{ matrix.artifact }}
 
   publish-release:
     needs: build
