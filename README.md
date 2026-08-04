@@ -2,6 +2,8 @@
 
 PinkDown is a focused, native Markdown editor and reader built in Rust. It pairs a calm Rosé Pine interface with an editable source pane and a live rendered preview—no browser, account, or workspace setup required.
 
+![PinkDown editor showing Markdown source and live preview](docs/assets/pinkdown-screenshot.webp)
+
 ## Highlights
 
 - Side-by-side Markdown source and rendered preview

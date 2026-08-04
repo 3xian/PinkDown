@@ -17,6 +17,7 @@ pub const IRIS: Color32 = Color32::from_rgb(196, 167, 231);
 pub const HIGHLIGHT_LOW: Color32 = Color32::from_rgb(33, 32, 46);
 pub const HIGHLIGHT_MED: Color32 = Color32::from_rgb(64, 61, 82);
 pub const HIGHLIGHT_HIGH: Color32 = Color32::from_rgb(82, 79, 103);
+pub const CONTENT_FONT_SIZE: f32 = 13.0;
 
 pub fn icon_data() -> egui::IconData {
     let mut rgba = Vec::with_capacity(64 * 64 * 4);
@@ -94,7 +95,7 @@ pub fn configure(ctx: &egui::Context) {
     );
     style.text_styles.insert(
         egui::TextStyle::Monospace,
-        FontId::new(13.0, FontFamily::Monospace),
+        FontId::new(CONTENT_FONT_SIZE, FontFamily::Monospace),
     );
     style.url_in_tooltip = true;
     ctx.set_style(style);
@@ -106,17 +107,18 @@ pub fn configure_preview(ui: &mut egui::Ui) {
     // Code blocks sit above the preview's base background; all semantic colors
     // continue to come from the single global Rosé Pine palette above.
     style.visuals.extreme_bg_color = SURFACE;
+    style.visuals.code_bg_color = HIGHLIGHT_MED;
     style.text_styles.insert(
         egui::TextStyle::Body,
-        FontId::new(16.0, FontFamily::Proportional),
+        FontId::new(CONTENT_FONT_SIZE, FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Heading,
-        FontId::new(29.0, FontFamily::Proportional),
+        FontId::new(18.0, FontFamily::Proportional),
     );
     style.text_styles.insert(
         egui::TextStyle::Monospace,
-        FontId::new(14.0, FontFamily::Monospace),
+        FontId::new(CONTENT_FONT_SIZE, FontFamily::Monospace),
     );
     style.text_styles.insert(
         egui::TextStyle::Small,
