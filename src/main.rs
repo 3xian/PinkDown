@@ -1,6 +1,13 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    io::{self, Read},
+    path::{Path, PathBuf},
+    process::{self, Command},
+    sync::mpsc::{self, Receiver, TryRecvError},
+    thread,
+};
 
 use chardetng::EncodingDetector;
 use eframe::{
@@ -9,6 +16,9 @@ use eframe::{
 };
 use encoding_rs::{UTF_16BE, UTF_16LE};
 use rfd::FileDialog;
+use semver::Version;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 // Rosé Pine — official default palette: https://rosepinetheme.com/palette/
 const BASE: Color32 = Color32::from_rgb(25, 23, 36);
@@ -26,6 +36,9 @@ const IRIS: Color32 = Color32::from_rgb(196, 167, 231);
 const HIGHLIGHT_LOW: Color32 = Color32::from_rgb(33, 32, 46);
 const HIGHLIGHT_MED: Color32 = Color32::from_rgb(64, 61, 82);
 const HIGHLIGHT_HIGH: Color32 = Color32::from_rgb(82, 79, 103);
+const GITHUB_TAGS_URL: &str = "https://api.github.com/repos/3xian/PinkDown/tags?per_page=100";
+const GITHUB_RELEASES_URL: &str = "https://github.com/3xian/PinkDown/releases/download";
+const WINDOWS_RELEASE_ASSET: &str = "pinkdown-windows-x64.exe";
 
 fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -78,6 +91,7 @@ struct PinkDown {
     file_path: Option<PathBuf>,
     status: String,
     show_help: bool,
+    update_receiver: Option<Receiver<UpdateResult>>,
     #[cfg(target_os = "windows")]
     native_frame_passes: u8,
 }
@@ -92,6 +106,7 @@ impl PinkDown {
             file_path: None,
             status: "Ready to write".into(),
             show_help: false,
+            update_receiver: None,
             #[cfg(target_os = "windows")]
             native_frame_passes: 0,
         }
@@ -142,6 +157,212 @@ impl PinkDown {
             }
         }
     }
+
+    fn check_for_updates(&mut self) {
+        if self.update_receiver.is_some() {
+            return;
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        self.update_receiver = Some(receiver);
+        self.status = "Checking for updates…".into();
+        thread::spawn(move || {
+            let _ = sender.send(check_and_install_update());
+        });
+    }
+
+    fn poll_update(&mut self, ctx: &egui::Context) {
+        let Some(receiver) = &self.update_receiver else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(UpdateResult::Status(message)) => {
+                self.status = message;
+                self.update_receiver = None;
+            }
+            Ok(UpdateResult::Restarting(message)) => {
+                self.status = message;
+                self.update_receiver = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100))
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.status = "Update check did not complete".into();
+                self.update_receiver = None;
+            }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct GitHubTag {
+    name: String,
+}
+
+enum UpdateResult {
+    Status(String),
+    Restarting(String),
+}
+
+fn check_and_install_update() -> UpdateResult {
+    let result = (|| {
+        let latest_tag = latest_github_tag()?;
+        let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
+            .map_err(|error| format!("Invalid current version: {error}"))?;
+        let latest_version = version_from_tag(&latest_tag)?;
+
+        if latest_version <= current_version {
+            return Ok(UpdateResult::Status(format!(
+                "PinkDown v{current_version} is up to date"
+            )));
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            let downloaded_update = download_windows_update(&latest_tag)?;
+            schedule_windows_update(&downloaded_update)?;
+            Ok(UpdateResult::Restarting(format!(
+                "Installing PinkDown {latest_tag}; the app will restart"
+            )))
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            Err("Automatic updates are currently available on Windows only".into())
+        }
+    })();
+
+    result.unwrap_or_else(UpdateResult::Status)
+}
+
+fn latest_github_tag() -> Result<String, String> {
+    let tags: Vec<GitHubTag> = ureq::get(GITHUB_TAGS_URL)
+        .set(
+            "User-Agent",
+            concat!("PinkDown/", env!("CARGO_PKG_VERSION")),
+        )
+        .call()
+        .map_err(|error| format!("Could not contact GitHub: {error}"))?
+        .into_json()
+        .map_err(|error| format!("Could not read GitHub tags: {error}"))?;
+
+    tags.into_iter()
+        .filter_map(|tag| {
+            version_from_tag(&tag.name)
+                .ok()
+                .map(|version| (version, tag.name))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+        .map(|(_, tag)| tag)
+        .ok_or_else(|| "No semantic-version tags found on GitHub".into())
+}
+
+fn version_from_tag(tag: &str) -> Result<Version, String> {
+    Version::parse(tag.trim_start_matches('v'))
+        .map_err(|error| format!("GitHub tag {tag:?} is not a semantic version: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn download_windows_update(tag: &str) -> Result<PathBuf, String> {
+    let asset_url = format!("{GITHUB_RELEASES_URL}/{tag}/{WINDOWS_RELEASE_ASSET}");
+    let checksum_url = format!("{asset_url}.sha256");
+    let expected_checksum = download_text(&checksum_url)?
+        .split_whitespace()
+        .next()
+        .filter(|checksum| checksum.len() == 64 && checksum.chars().all(|c| c.is_ascii_hexdigit()))
+        .ok_or_else(|| "Release checksum is missing or invalid".to_owned())?
+        .to_ascii_lowercase();
+    let destination = std::env::temp_dir().join(format!("pinkdown-{tag}-{}.exe", process::id()));
+
+    let result = (|| {
+        let response = ureq::get(&asset_url)
+            .set(
+                "User-Agent",
+                concat!("PinkDown/", env!("CARGO_PKG_VERSION")),
+            )
+            .call()
+            .map_err(|error| format!("Could not download {tag}: {error}"))?;
+        let mut source = response.into_reader();
+        let mut file = fs::File::create(&destination)
+            .map_err(|error| format!("Could not create update file: {error}"))?;
+        io::copy(&mut source, &mut file)
+            .map_err(|error| format!("Could not save update: {error}"))?;
+
+        let actual_checksum = sha256_file(&destination)?;
+        if actual_checksum != expected_checksum {
+            return Err("Downloaded update did not match its release checksum".into());
+        }
+        Ok(destination.clone())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&destination);
+    }
+    result
+}
+
+#[cfg(target_os = "windows")]
+fn download_text(url: &str) -> Result<String, String> {
+    let mut response = ureq::get(url)
+        .set(
+            "User-Agent",
+            concat!("PinkDown/", env!("CARGO_PKG_VERSION")),
+        )
+        .call()
+        .map_err(|error| format!("Could not download release checksum: {error}"))?
+        .into_reader();
+    let mut text = String::new();
+    response
+        .read_to_string(&mut text)
+        .map_err(|error| format!("Could not read release checksum: {error}"))?;
+    Ok(text)
+}
+
+#[cfg(target_os = "windows")]
+fn sha256_file(path: &Path) -> Result<String, String> {
+    let mut file =
+        fs::File::open(path).map_err(|error| format!("Could not verify update: {error}"))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0; 32 * 1024];
+    loop {
+        let bytes_read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("Could not verify update: {error}"))?;
+        if bytes_read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..bytes_read]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(target_os = "windows")]
+fn schedule_windows_update(downloaded_update: &Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let current_exe = std::env::current_exe()
+        .map_err(|error| format!("Could not locate the running app: {error}"))?;
+    let script_path = std::env::temp_dir().join(format!("pinkdown-update-{}.ps1", process::id()));
+    let parent_process = process::id();
+    let quote = |path: &Path| path.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'\n$parent = Get-Process -Id {parent_process} -ErrorAction SilentlyContinue\nif ($parent) {{ Wait-Process -Id {parent_process} }}\nMove-Item -LiteralPath '{}' -Destination '{}' -Force\nStart-Process -FilePath '{}'\nRemove-Item -LiteralPath $PSCommandPath -Force\n",
+        quote(downloaded_update),
+        quote(&current_exe),
+        quote(&current_exe),
+    );
+    fs::write(&script_path, script)
+        .map_err(|error| format!("Could not prepare updater: {error}"))?;
+    Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&script_path)
+        .creation_flags(CREATE_NO_WINDOW)
+        .spawn()
+        .map_err(|error| format!("Could not start updater: {error}"))?;
+    Ok(())
 }
 
 #[cfg(target_os = "windows")]
@@ -200,6 +421,7 @@ impl eframe::App for PinkDown {
             self.native_frame_passes += 1;
             ctx.request_repaint_after(std::time::Duration::from_millis(80));
         }
+        self.poll_update(ctx);
 
         if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::O)) {
             self.open();
@@ -296,27 +518,58 @@ fn configure_cjk_font(ctx: &egui::Context) {
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
     ];
 
-    for path in candidates {
-        if let Ok(bytes) = fs::read(path) {
-            let mut fonts = FontDefinitions::default();
-            let font_name = "system-cjk".to_owned();
-            fonts.font_data.insert(
-                font_name.clone(),
-                std::sync::Arc::new(FontData::from_owned(bytes)),
-            );
-            fonts
-                .families
-                .get_mut(&FontFamily::Proportional)
-                .expect("default proportional font family")
-                .push(font_name.clone());
-            fonts
-                .families
-                .get_mut(&FontFamily::Monospace)
-                .expect("default monospace font family")
-                .push(font_name);
-            ctx.set_fonts(fonts);
-            return;
-        }
+    #[cfg(target_os = "windows")]
+    let brand_candidates = [
+        r"C:\Windows\Fonts\simhei.ttf",
+        r"C:\Windows\Fonts\arialbd.ttf",
+    ];
+    #[cfg(target_os = "macos")]
+    let brand_candidates = [
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Verdana Bold.ttf",
+    ];
+    #[cfg(target_os = "linux")]
+    let brand_candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf",
+    ];
+
+    let mut fonts = FontDefinitions::default();
+    let mut configured = false;
+    if let Some(bytes) = candidates.into_iter().find_map(|path| fs::read(path).ok()) {
+        let font_name = "system-cjk".to_owned();
+        fonts.font_data.insert(
+            font_name.clone(),
+            std::sync::Arc::new(FontData::from_owned(bytes)),
+        );
+        fonts
+            .families
+            .get_mut(&FontFamily::Proportional)
+            .expect("default proportional font family")
+            .push(font_name.clone());
+        fonts
+            .families
+            .get_mut(&FontFamily::Monospace)
+            .expect("default monospace font family")
+            .push(font_name);
+        configured = true;
+    }
+    if let Some(bytes) = brand_candidates
+        .into_iter()
+        .find_map(|path| fs::read(path).ok())
+    {
+        let font_name = "brand-bold".to_owned();
+        fonts.font_data.insert(
+            font_name.clone(),
+            std::sync::Arc::new(FontData::from_owned(bytes)),
+        );
+        fonts
+            .families
+            .insert(FontFamily::Name(font_name.clone().into()), vec![font_name]);
+        configured = true;
+    }
+    if configured {
+        ctx.set_fonts(fonts);
     }
 }
 
@@ -409,6 +662,12 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, app: &mut PinkDown) {
         if toolbar_button(ui, "Save as").clicked() {
             app.save(true);
         }
+        if toolbar_button(ui, "Check updates")
+            .on_hover_text("Download and install the latest GitHub release")
+            .clicked()
+        {
+            app.check_for_updates();
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if window_button(ui, WindowButton::Close, "Close").clicked() {
@@ -442,15 +701,26 @@ fn title_bar(ui: &mut egui::Ui, ctx: &egui::Context, app: &mut PinkDown) {
 }
 
 fn toolbar_button(ui: &mut egui::Ui, label: &str) -> egui::Response {
-    ui.add_sized(
-        [if label == "Save as" { 64.0 } else { 52.0 }, 30.0],
-        egui::Button::new(RichText::new(label).size(12.0).color(if label == "Save" {
-            FOAM
-        } else {
-            SUBTLE
-        }))
-        .frame(false),
-    )
+    let size = egui::vec2(
+        match label {
+            "Save as" => 64.0,
+            "Check updates" => 96.0,
+            _ => 52.0,
+        },
+        30.0,
+    );
+    let hover =
+        ui.rect_contains_pointer(egui::Rect::from_min_size(ui.next_widget_position(), size));
+    let text = if hover {
+        RichText::new(label)
+            .size(12.0)
+            .color(TEXT)
+            .family(FontFamily::Name("brand-bold".into()))
+    } else {
+        RichText::new(label).size(12.0).color(SUBTLE)
+    };
+    ui.add_sized(size, egui::Button::new(text).frame(false))
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 fn gradient_label(ui: &mut egui::Ui, text: &str, size: f32) {
@@ -468,7 +738,7 @@ fn gradient_label(ui: &mut egui::Ui, text: &str, size: f32) {
             &character.to_string(),
             0.0,
             TextFormat {
-                font_id: FontId::new(size, FontFamily::Proportional),
+                font_id: FontId::new(size, FontFamily::Name("brand-bold".into())),
                 color,
                 ..Default::default()
             },
