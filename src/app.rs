@@ -14,6 +14,11 @@ use crate::{
 #[cfg(target_os = "windows")]
 use crate::theme::LOVE;
 
+#[cfg(target_os = "macos")]
+const SHORTCUT_MOD: &str = "Cmd";
+#[cfg(not(target_os = "macos"))]
+const SHORTCUT_MOD: &str = "Ctrl";
+
 pub struct PinkDown {
     document: Document,
     status: String,
@@ -22,6 +27,7 @@ pub struct PinkDown {
     markdown_cache: CommonMarkCache,
     update_checker: UpdateChecker,
     update_staged: bool,
+    current_title: String,
     #[cfg(target_os = "windows")]
     native_frame_passes: u8,
 }
@@ -58,6 +64,7 @@ impl PinkDown {
             markdown_cache: CommonMarkCache::default(),
             update_checker: UpdateChecker::default(),
             update_staged: false,
+            current_title: "PinkDown".into(),
             #[cfg(target_os = "windows")]
             native_frame_passes: 0,
         };
@@ -133,6 +140,17 @@ impl PinkDown {
         }
     }
 
+    fn sync_window_title(&mut self, ctx: &egui::Context) {
+        let title = self
+            .document
+            .window_title()
+            .unwrap_or_else(|| "PinkDown".to_owned());
+        if title != self.current_title {
+            self.current_title = title;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.current_title.clone()));
+        }
+    }
+
     fn poll_update(&mut self, ctx: &egui::Context) {
         match self.update_checker.poll() {
             PollResult::Idle => {}
@@ -193,6 +211,7 @@ impl eframe::App for PinkDown {
         self.check_close_request(ctx);
         self.poll_update(ctx);
         self.handle_inputs(ctx);
+        self.sync_window_title(ctx);
         paint_window_shell(ctx);
         self.show_toolbar(ctx);
         self.show_statusbar(ctx);
@@ -208,7 +227,8 @@ impl PinkDown {
             self.request_action(PendingAction::OpenDialog, ctx);
         }
         if ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S)) {
-            self.save(false);
+            let force_dialog = ctx.input(|input| input.modifiers.shift);
+            self.save(force_dialog);
         }
         if let Some(path) = ctx
             .input(|input| input.raw.dropped_files.clone())
@@ -237,13 +257,24 @@ impl PinkDown {
                     });
                     ui.add_space(16.0);
 
-                    if toolbar_button(ui, "Open", 52.0).clicked() {
+                    if toolbar_button(ui, "Open", 52.0)
+                        .on_hover_text(format!("Open a Markdown file  ({SHORTCUT_MOD}+O)"))
+                        .clicked()
+                    {
                         self.request_action(PendingAction::OpenDialog, ctx);
                     }
-                    if toolbar_button(ui, "Save", 52.0).clicked() {
+                    if toolbar_button(ui, "Save", 52.0)
+                        .on_hover_text(format!("Save the current document  ({SHORTCUT_MOD}+S)"))
+                        .clicked()
+                    {
                         self.save(false);
                     }
-                    if toolbar_button(ui, "Save as", 64.0).clicked() {
+                    if toolbar_button(ui, "Save as", 64.0)
+                        .on_hover_text(format!(
+                            "Save the document under a new name  ({SHORTCUT_MOD}+Shift+S)"
+                        ))
+                        .clicked()
+                    {
                         self.save(true);
                     }
                     if toolbar_button(ui, "Check updates", 96.0)

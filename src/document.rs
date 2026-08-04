@@ -109,6 +109,16 @@ impl Document {
             .map_or_else(|| "Untitled".to_owned(), display_name)
     }
 
+    /// Window title bar / taskbar text; `None` while no file is open.
+    /// A dirty document gets a trailing `*` marker.
+    pub fn window_title(&self) -> Option<String> {
+        let mut title = display_name(self.path.as_deref()?);
+        if self.is_dirty() {
+            title.push('*');
+        }
+        Some(title)
+    }
+
     pub fn encoding_label(&self) -> &'static str {
         self.encoding.label()
     }
@@ -268,5 +278,31 @@ mod tests {
         assert!(!document.is_dirty());
         document.text.push('!');
         assert!(document.is_dirty());
+    }
+
+    #[test]
+    fn window_title_reflects_path_and_dirty_state() {
+        let pid = std::process::id();
+        let title_path =
+            std::env::temp_dir().join(format!("pinkdown-document-{pid}-title.md"));
+        fs::write(&title_path, "hello").unwrap();
+        let document = Document::load(title_path.clone()).unwrap();
+        let expected = format!("pinkdown-document-{pid}-title.md");
+        assert_eq!(document.window_title(), Some(expected));
+        let _ = fs::remove_file(title_path);
+
+        let untitled = Document::default();
+        assert_eq!(untitled.window_title(), None);
+
+        let dirty_path =
+            std::env::temp_dir().join(format!("pinkdown-document-{pid}-dirty.md"));
+        fs::write(&dirty_path, "hello").unwrap();
+        let mut dirty = Document::load(dirty_path.clone()).unwrap();
+        dirty.text.push('!');
+        assert_eq!(
+            dirty.window_title(),
+            Some(format!("pinkdown-document-{pid}-dirty.md*"))
+        );
+        let _ = fs::remove_file(dirty_path);
     }
 }
