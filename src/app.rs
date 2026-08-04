@@ -29,6 +29,7 @@ enum PendingAction {
     OpenDialog,
     OpenPath(PathBuf),
     Close,
+    #[cfg(target_os = "windows")]
     Restart,
 }
 
@@ -39,6 +40,7 @@ impl PendingAction {
                 "Save your changes before opening another document?"
             }
             Self::Close => "Save your changes before closing PinkDown?",
+            #[cfg(target_os = "windows")]
             Self::Restart => "Save your changes before restarting to install the update?",
         }
     }
@@ -85,7 +87,12 @@ impl PinkDown {
                 }
             }
             PendingAction::OpenPath(path) => self.open_path(path),
-            PendingAction::Close | PendingAction::Restart => {
+            PendingAction::Close => {
+                self.allow_close = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            #[cfg(target_os = "windows")]
+            PendingAction::Restart => {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -401,7 +408,7 @@ fn lerp_color(from: Color32, to: Color32, amount: f32) -> Color32 {
 fn source_panel(ui: &mut egui::Ui, source: &mut String) {
     egui::Frame::new()
         .fill(SURFACE)
-        .stroke(egui::Stroke::new(1.0, HIGHLIGHT_LOW))
+        .stroke(egui::Stroke::new(1.0_f32, HIGHLIGHT_LOW))
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::symmetric(18, 16))
         .show(ui, |ui| {
@@ -432,7 +439,7 @@ fn source_panel(ui: &mut egui::Ui, source: &mut String) {
 fn preview_panel(ui: &mut egui::Ui, source: &str, cache: &mut CommonMarkCache) {
     egui::Frame::new()
         .fill(BASE)
-        .stroke(egui::Stroke::new(1.0, HIGHLIGHT_LOW))
+        .stroke(egui::Stroke::new(1.0_f32, HIGHLIGHT_LOW))
         .corner_radius(egui::CornerRadius::same(12))
         .inner_margin(egui::Margin::symmetric(20, 16))
         .show(ui, |ui| {

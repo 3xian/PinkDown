@@ -85,7 +85,10 @@ struct GitHubTag {
 }
 
 fn check_for_update() -> Result<UpdateOutcome, UpdateError> {
+    #[cfg(target_os = "windows")]
     let (latest_tag, latest_version) = latest_github_tag()?;
+    #[cfg(not(target_os = "windows"))]
+    let (_, latest_version) = latest_github_tag()?;
     let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|error| UpdateError::new(format!("Invalid current version: {error}")))?;
 
