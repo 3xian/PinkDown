@@ -1,0 +1,42 @@
+name: Build binaries
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: pinkdown-windows-x64.exe
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: pinkdown-macos-arm64
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact: pinkdown-macos-x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Package binary
+        shell: bash
+        run: |
+          mkdir dist
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp target/${{ matrix.target }}/release/pinkdown.exe dist/${{ matrix.artifact }}
+          else
+            cp target/${{ matrix.target }}/release/pinkdown dist/${{ matrix.artifact }}
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/
