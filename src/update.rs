@@ -516,7 +516,7 @@ mod tests {
     }
 
     #[test]
-    fn mac_release_packages_an_app_bundle_with_a_retina_icon() {
+    fn mac_release_packages_a_dmg_with_a_retina_icon() {
         let plist = include_str!("../installer/macos/Info.plist");
         let packager = include_str!("../installer/macos/package.ps1");
         let workflow = include_str!("../.github/workflows/release.yml");
@@ -527,8 +527,10 @@ mod tests {
         assert!(plist.contains("<string>PinkDown.icns</string>"));
         assert!(packager.contains("icon_16x16.png"));
         assert!(packager.contains("icon_512x512@2x.png"));
-        assert!(workflow.contains("pinkdown-macos-arm64.zip"));
-        assert!(workflow.contains("pinkdown-macos-x64.zip"));
+        assert!(packager.contains("hdiutil create"));
+        assert!(packager.contains("ln -s '/Applications'"));
+        assert!(workflow.contains("pinkdown-macos-arm64.dmg"));
+        assert!(workflow.contains("pinkdown-macos-x64.dmg"));
     }
 
     #[cfg(target_os = "windows")]

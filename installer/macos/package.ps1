@@ -11,6 +11,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function Invoke-Native {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $Name,
+        [Parameter(Mandatory = $true)]
+        [scriptblock] $Command
+    )
+    & $Command
+    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
+        throw "$Name failed with exit code $LASTEXITCODE"
+    }
+}
+
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $binaryPath = (Resolve-Path $Binary).Path
 $iconSource = Join-Path $repoRoot 'assets/pinkdown-macos-icon.png'
@@ -21,15 +34,17 @@ $contents = Join-Path $bundle 'Contents'
 $macOs = Join-Path $contents 'MacOS'
 $resources = Join-Path $contents 'Resources'
 $iconset = Join-Path $dist 'PinkDown.iconset'
+$stage = Join-Path $dist 'dmg-stage'
 $artifact = Join-Path $dist $ArtifactName
+$applicationsLink = Join-Path $stage 'Applications'
 
-if ([IO.Path]::GetExtension($ArtifactName) -ne '.zip' -or
+if ([IO.Path]::GetExtension($ArtifactName) -ne '.dmg' -or
     [IO.Path]::GetFileName($ArtifactName) -ne $ArtifactName) {
-    throw 'ArtifactName must be a .zip filename without a directory.'
+    throw 'ArtifactName must be a .dmg filename without a directory.'
 }
 
 New-Item -ItemType Directory -Path $dist -Force | Out-Null
-foreach ($path in @($bundle, $iconset)) {
+foreach ($path in @($bundle, $iconset, $stage)) {
     if (Test-Path -LiteralPath $path) {
         Remove-Item -LiteralPath $path -Recurse -Force
     }
@@ -40,12 +55,16 @@ if (Test-Path -LiteralPath $artifact) {
 
 New-Item -ItemType Directory -Path $macOs, $resources, $iconset -Force | Out-Null
 Copy-Item -LiteralPath $binaryPath -Destination (Join-Path $macOs 'pinkdown')
-& chmod '+x' (Join-Path $macOs 'pinkdown')
+Invoke-Native -Name 'chmod' -Command { & chmod '+x' (Join-Path $macOs 'pinkdown') }
 Copy-Item -LiteralPath $plistSource -Destination (Join-Path $contents 'Info.plist')
 
 $plist = Join-Path $contents 'Info.plist'
-& /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $Version" $plist
-& /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $Version" $plist
+Invoke-Native -Name 'PlistBuddy version' -Command {
+    & /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $Version" $plist
+}
+Invoke-Native -Name 'PlistBuddy build' -Command {
+    & /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $Version" $plist
+}
 
 $iconSizes = @(
     @{ Name = 'icon_16x16.png'; Size = 16 },
@@ -62,15 +81,39 @@ $iconSizes = @(
 
 foreach ($icon in $iconSizes) {
     $output = Join-Path $iconset $icon.Name
-    & sips -z $icon.Size $icon.Size $iconSource --out $output | Out-Null
+    Invoke-Native -Name "sips $($icon.Name)" -Command {
+        & sips -z $icon.Size $icon.Size $iconSource --out $output | Out-Null
+    }
 }
 
-& iconutil -c icns $iconset -o (Join-Path $resources 'PinkDown.icns')
-& plutil -lint $plist | Out-Null
-& ditto -c -k --sequesterRsrc --keepParent $bundle $artifact
+Invoke-Native -Name 'iconutil' -Command {
+    & iconutil -c icns $iconset -o (Join-Path $resources 'PinkDown.icns')
+}
+Invoke-Native -Name 'plutil' -Command {
+    & plutil -lint $plist | Out-Null
+}
+
+# Stage a drag-to-Applications disk image layout.
+New-Item -ItemType Directory -Path $stage -Force | Out-Null
+Copy-Item -LiteralPath $bundle -Destination (Join-Path $stage 'PinkDown.app') -Recurse
+Invoke-Native -Name 'ln' -Command {
+    & ln -s '/Applications' $applicationsLink
+}
+if (!(Test-Path -LiteralPath $applicationsLink)) {
+    throw "Applications symlink was not created: $applicationsLink"
+}
+
+Invoke-Native -Name 'hdiutil create' -Command {
+    & hdiutil create `
+        -volname 'PinkDown' `
+        -srcfolder $stage `
+        -ov `
+        -format UDZO `
+        $artifact
+}
 
 if (!(Test-Path -LiteralPath $artifact)) {
-    throw "macOS bundle archive was not created: $artifact"
+    throw "macOS DMG was not created: $artifact"
 }
 
-Remove-Item -LiteralPath $bundle, $iconset -Recurse -Force
+Remove-Item -LiteralPath $bundle, $iconset, $stage -Recurse -Force

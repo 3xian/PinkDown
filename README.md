@@ -29,9 +29,9 @@ The Windows installer installs PinkDown for the current user and registers it as
 
 ## Downloads and updates
 
-Official builds are published on the [GitHub Releases page](https://github.com/3xian/PinkDown/releases). Windows is distributed as `pinkdown-windows-x64-setup.exe`; macOS is distributed as a zipped `PinkDown.app` bundle for Apple Silicon or Intel, with a native multi-resolution icon. Every download includes a SHA-256 checksum file.
+Official builds are published on the [GitHub Releases page](https://github.com/3xian/PinkDown/releases). Windows is distributed as `pinkdown-windows-x64-setup.exe`; macOS is distributed as a DMG (`pinkdown-macos-arm64.dmg` / `pinkdown-macos-x64.dmg`) containing `PinkDown.app` and an Applications shortcut for Apple Silicon or Intel, with a native multi-resolution icon. Every download includes a SHA-256 checksum file.
 
-The in-app updater downloads and runs `pinkdown-windows-x64-setup.exe`. On macOS, download the matching archive manually, extract it, and move `PinkDown.app` to Applications; automatic installation is intentionally limited to Windows for now.
+The in-app updater downloads and runs `pinkdown-windows-x64-setup.exe`. On macOS, open the matching DMG and drag `PinkDown.app` into Applications; automatic installation is intentionally limited to Windows for now.
 
 GitHub's API limits unauthenticated requests to 60 per hour per IP, which shared VPN or NAT exit addresses can exhaust. If **Check updates** reports a rate-limit error, set a personal access token so PinkDown authenticates against the API (5,000 requests per hour): create a token at GitHub → Settings → Developer settings → Personal access tokens (a classic token with `repo` scope is enough), then set the `GITHUB_TOKEN` or `GH_TOKEN` environment variable for your user and restart PinkDown. If you use the GitHub CLI, `gh auth token` prints the token `gh` already stores.
 

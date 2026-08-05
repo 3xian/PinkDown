@@ -19,6 +19,10 @@ const SHORTCUT_MOD: &str = "Cmd";
 #[cfg(not(target_os = "macos"))]
 const SHORTCUT_MOD: &str = "Ctrl";
 
+// Clearance for macOS traffic lights under full-size content / hidden titlebar.
+#[cfg(target_os = "macos")]
+const MACOS_TRAFFIC_LIGHT_INSET: f32 = 68.0;
+
 pub struct PinkDown {
     document: Document,
     status: String,
@@ -245,10 +249,15 @@ impl PinkDown {
             .show_separator_line(false)
             .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(20, 10)))
             .show(ctx, |ui| {
-                #[cfg(target_os = "windows")]
+                // Drag region above the editor panels (custom chrome on Windows / macOS).
+                #[cfg(any(target_os = "windows", target_os = "macos"))]
                 configure_title_drag(ui, ctx);
 
                 ui.horizontal(|ui| {
+                    // Keep toolbar chrome clear of the native traffic lights.
+                    #[cfg(target_os = "macos")]
+                    ui.add_space(MACOS_TRAFFIC_LIGHT_INSET);
+
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
                         ui.add_space(4.0);
@@ -451,16 +460,24 @@ fn source_panel(ui: &mut egui::Ui, source: &mut String) {
         });
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn configure_title_drag(ui: &mut egui::Ui, ctx: &egui::Context) {
-    let drag = ui.interact(
-        ui.max_rect(),
-        ui.id().with("title-drag"),
-        egui::Sense::drag(),
-    );
+    // macOS keeps system traffic lights; exclude them so StartDrag does not fight AppKit.
+    #[cfg(target_os = "macos")]
+    let drag_rect = {
+        let mut rect = ui.max_rect();
+        rect.min.x += MACOS_TRAFFIC_LIGHT_INSET;
+        rect
+    };
+    #[cfg(not(target_os = "macos"))]
+    let drag_rect = ui.max_rect();
+
+    let drag = ui.interact(drag_rect, ui.id().with("title-drag"), egui::Sense::drag());
     if drag.drag_started() {
         ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
+    // Double-click maximize is Windows custom-chrome behavior; macOS uses system zoom.
+    #[cfg(target_os = "windows")]
     if drag.double_clicked() {
         let maximized = ctx.input(|input| input.viewport().maximized.unwrap_or(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
