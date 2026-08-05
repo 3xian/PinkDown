@@ -1,7 +1,18 @@
+//! GitHub-based update check and platform installers.
+//!
+//! Flow: check tags → [`UpdateOutcome::Available`] → user confirms → download
+//! + stage → [`UpdateOutcome::InstallReady`] → app quits → helper applies package.
+
+mod macos;
+mod windows;
+
 use std::{
     fmt,
+    path::{Path, PathBuf},
+    process::Child,
     sync::mpsc::{self, Receiver, TryRecvError},
     thread,
+    time::{Duration, Instant},
 };
 
 use semver::Version;
@@ -10,10 +21,18 @@ use serde::Deserialize;
 const GITHUB_TAGS_URL: &str = "https://api.github.com/repos/3xian/PinkDown/tags?per_page=100";
 const PINKDOWN_USER_AGENT: &str = concat!("PinkDown/", env!("CARGO_PKG_VERSION"));
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 const GITHUB_RELEASES_URL: &str = "https://github.com/3xian/PinkDown/releases/download";
+
 #[cfg(target_os = "windows")]
-const WINDOWS_RELEASE_ASSET: &str = "pinkdown-windows-x64-setup.exe";
+const RELEASE_ASSET: &str = "pinkdown-windows-x64-setup.exe";
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+const RELEASE_ASSET: &str = "pinkdown-macos-arm64.dmg";
+#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+const RELEASE_ASSET: &str = "pinkdown-macos-x64.dmg";
+
+/// Whether this build can download and apply a release package automatically.
+pub const AUTO_INSTALL: bool = cfg!(any(target_os = "windows", target_os = "macos"));
 
 #[derive(Debug)]
 pub struct UpdateError(String);
@@ -30,12 +49,21 @@ impl fmt::Display for UpdateError {
     }
 }
 
+/// A newer release the user has not yet accepted.
+#[derive(Clone, Debug)]
+pub struct AvailableUpdate {
+    pub version: Version,
+    /// GitHub tag for the release asset (e.g. `v1.4.0`).
+    pub tag: String,
+}
+
 pub enum UpdateOutcome {
     UpToDate(Version),
-    #[cfg(target_os = "windows")]
+    /// Call [`UpdateChecker::start_install`] after the user confirms when
+    /// [`AUTO_INSTALL`] is true; otherwise open the releases page.
+    Available(AvailableUpdate),
+    /// Package downloaded, verified, and scheduled to apply after exit.
     InstallReady(Version),
-    #[cfg(not(target_os = "windows"))]
-    ManualUpdate(Version),
 }
 
 pub enum PollResult {
@@ -44,22 +72,38 @@ pub enum PollResult {
     Ready(Result<UpdateOutcome, UpdateError>),
 }
 
+/// UI-facing update state machine (single source of truth for the toolbar/prompt).
+#[derive(Default)]
+pub enum UpdateUi {
+    #[default]
+    Idle,
+    Checking,
+    Available(AvailableUpdate),
+    /// Install in flight; keeps the offer so a failed download can restore the prompt.
+    Downloading(AvailableUpdate),
+    Staged {
+        version: Version,
+    },
+}
+
 #[derive(Default)]
 pub struct UpdateChecker {
     receiver: Option<Receiver<Result<UpdateOutcome, UpdateError>>>,
 }
 
 impl UpdateChecker {
+    /// Starts a background version check against GitHub tags (no download).
     pub fn start(&mut self) -> bool {
-        if self.receiver.is_some() {
+        self.spawn(check_for_update)
+    }
+
+    /// Downloads the release package, verifies its checksum, and schedules
+    /// installation after PinkDown exits. Only meaningful when [`AUTO_INSTALL`].
+    pub fn start_install(&mut self, available: AvailableUpdate) -> bool {
+        if !AUTO_INSTALL {
             return false;
         }
-        let (sender, receiver) = mpsc::channel();
-        self.receiver = Some(receiver);
-        thread::spawn(move || {
-            let _ = sender.send(check_for_update());
-        });
-        true
+        self.spawn(move || download_and_stage_update(available))
     }
 
     pub fn poll(&mut self) -> PollResult {
@@ -78,6 +122,21 @@ impl UpdateChecker {
             }
         }
     }
+
+    fn spawn(
+        &mut self,
+        work: impl FnOnce() -> Result<UpdateOutcome, UpdateError> + Send + 'static,
+    ) -> bool {
+        if self.receiver.is_some() {
+            return false;
+        }
+        let (sender, receiver) = mpsc::channel();
+        self.receiver = Some(receiver);
+        thread::spawn(move || {
+            let _ = sender.send(work());
+        });
+        true
+    }
 }
 
 #[derive(Deserialize)]
@@ -86,10 +145,7 @@ struct GitHubTag {
 }
 
 fn check_for_update() -> Result<UpdateOutcome, UpdateError> {
-    #[cfg(target_os = "windows")]
     let (latest_tag, latest_version) = latest_github_tag()?;
-    #[cfg(not(target_os = "windows"))]
-    let (_, latest_version) = latest_github_tag()?;
     let current_version = Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|error| UpdateError::new(format!("Invalid current version: {error}")))?;
 
@@ -97,19 +153,39 @@ fn check_for_update() -> Result<UpdateOutcome, UpdateError> {
         return Ok(UpdateOutcome::UpToDate(current_version));
     }
 
-    #[cfg(target_os = "windows")]
+    Ok(UpdateOutcome::Available(AvailableUpdate {
+        version: latest_version,
+        tag: latest_tag,
+    }))
+}
+
+fn download_and_stage_update(available: AvailableUpdate) -> Result<UpdateOutcome, UpdateError> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        let downloaded = download_windows_update(&latest_tag)?;
-        if let Err(error) = schedule_windows_update(&downloaded) {
+        let downloaded = download_release_asset(&available.tag)?;
+        let schedule_result = {
+            #[cfg(target_os = "windows")]
+            {
+                windows::schedule(&downloaded)
+            }
+            #[cfg(target_os = "macos")]
+            {
+                macos::schedule(&downloaded)
+            }
+        };
+        if let Err(error) = schedule_result {
             let _ = std::fs::remove_file(downloaded);
             return Err(error);
         }
-        Ok(UpdateOutcome::InstallReady(latest_version))
+        Ok(UpdateOutcome::InstallReady(available.version))
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        Ok(UpdateOutcome::ManualUpdate(latest_version))
+        let _ = available;
+        Err(UpdateError::new(
+            "Automatic install is not supported on this platform",
+        ))
     }
 }
 
@@ -144,9 +220,7 @@ fn github_token() -> Option<String> {
     github_token_from(|name| std::env::var(name))
 }
 
-fn github_token_from(
-    var: impl Fn(&str) -> Result<String, std::env::VarError>,
-) -> Option<String> {
+fn github_token_from(var: impl Fn(&str) -> Result<String, std::env::VarError>) -> Option<String> {
     var("GITHUB_TOKEN")
         .or_else(|_| var("GH_TOKEN"))
         .ok()
@@ -179,11 +253,11 @@ fn version_from_tag(tag: &str) -> Result<Version, semver::Error> {
     Version::parse(tag.trim_start_matches('v'))
 }
 
-#[cfg(target_os = "windows")]
-fn download_windows_update(tag: &str) -> Result<std::path::PathBuf, UpdateError> {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn download_release_asset(tag: &str) -> Result<PathBuf, UpdateError> {
     use std::{fs, io, io::Read};
 
-    let asset_url = format!("{GITHUB_RELEASES_URL}/{tag}/{WINDOWS_RELEASE_ASSET}");
+    let asset_url = format!("{GITHUB_RELEASES_URL}/{tag}/{RELEASE_ASSET}");
     let checksum_url = format!("{asset_url}.sha256");
     let expected_checksum = download_text(&checksum_url)?
         .split_whitespace()
@@ -192,7 +266,7 @@ fn download_windows_update(tag: &str) -> Result<std::path::PathBuf, UpdateError>
         .ok_or_else(|| UpdateError::new("Release checksum is missing or invalid"))?
         .to_ascii_lowercase();
     let destination =
-        std::env::temp_dir().join(format!("pinkdown-{tag}-{}-setup.exe", std::process::id()));
+        std::env::temp_dir().join(format!("pinkdown-{tag}-{}-{RELEASE_ASSET}", std::process::id()));
 
     let result = (|| {
         let response = ureq::get(&asset_url)
@@ -225,7 +299,7 @@ fn download_windows_update(tag: &str) -> Result<std::path::PathBuf, UpdateError>
     result
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn download_text(url: &str) -> Result<String, UpdateError> {
     use std::io::Read;
 
@@ -241,8 +315,8 @@ fn download_text(url: &str) -> Result<String, UpdateError> {
     Ok(text)
 }
 
-#[cfg(target_os = "windows")]
-fn sha256_file(path: &std::path::Path) -> Result<String, UpdateError> {
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn sha256_file(path: &Path) -> Result<String, UpdateError> {
     use std::{fs, io::Read};
 
     use sha2::{Digest, Sha256};
@@ -263,40 +337,15 @@ fn sha256_file(path: &std::path::Path) -> Result<String, UpdateError> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-#[cfg(target_os = "windows")]
-fn schedule_windows_update(downloaded: &std::path::Path) -> Result<(), UpdateError> {
-    use std::{
-        fs,
-        os::windows::process::CommandExt,
-        process::{Command, Stdio},
-        time::{Duration, Instant},
-    };
-
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let current = std::env::current_exe()
-        .map_err(|error| UpdateError::new(format!("Could not locate the running app: {error}")))?;
-    let temp = std::env::temp_dir();
-    let process_id = std::process::id();
-    let script = temp.join(format!("pinkdown-update-{process_id}.ps1"));
-    let ready = temp.join(format!("pinkdown-update-{process_id}.ready"));
-    let log = temp.join(format!("pinkdown-update-{process_id}.log"));
-    let _ = fs::remove_file(&ready);
-
-    let script_text =
-        windows_update_script(process_id, downloaded, &current, &ready, &log, &script);
-    fs::write(&script, script_text)
-        .map_err(|error| UpdateError::new(format!("Could not prepare updater: {error}")))?;
-
-    let mut child = Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-        .arg(&script)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .creation_flags(CREATE_NO_WINDOW)
-        .spawn()
-        .map_err(|error| UpdateError::new(format!("Could not start updater: {error}")))?;
-
+/// Shared handoff: wait until the helper creates `ready`, or fail if it exits /
+/// times out before acknowledging.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn wait_for_updater_ready(
+    child: &mut Child,
+    ready: &Path,
+    script: &Path,
+    log: &Path,
+) -> Result<(), UpdateError> {
     let deadline = Instant::now() + Duration::from_secs(5);
     while Instant::now() < deadline {
         if ready.is_file() {
@@ -316,54 +365,27 @@ fn schedule_windows_update(downloaded: &std::path::Path) -> Result<(), UpdateErr
     }
 
     let _ = child.kill();
-    let _ = fs::remove_file(&script);
+    let _ = std::fs::remove_file(script);
     Err(UpdateError::new("Updater did not acknowledge the handoff"))
 }
 
-#[cfg(target_os = "windows")]
-fn windows_update_script(
-    parent_id: u32,
-    installer: &std::path::Path,
-    current: &std::path::Path,
-    ready: &std::path::Path,
-    log: &std::path::Path,
-    script: &std::path::Path,
-) -> String {
-    let quoted =
-        |path: &std::path::Path| format!("'{}'", path.display().to_string().replace('\'', "''"));
-    [
-        "$ErrorActionPreference = 'Stop'".to_owned(),
-        format!("$parentId = {parent_id}"),
-        format!("$installer = {}", quoted(installer)),
-        format!("$current = {}", quoted(current)),
-        "$installDir = Split-Path -Parent $current".to_owned(),
-        format!("$ready = {}", quoted(ready)),
-        format!("$log = {}", quoted(log)),
-        format!("$script = {}", quoted(script)),
-        "try {".to_owned(),
-        "    Set-Content -LiteralPath $ready -Value 'ready' -Encoding ascii".to_owned(),
-        "    $parent = Get-Process -Id $parentId -ErrorAction SilentlyContinue".to_owned(),
-        "    if ($parent) { Wait-Process -Id $parentId }".to_owned(),
-        "    $installArgs = @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', ('/DIR=\"' + $installDir + '\"'))".to_owned(),
-        "    $setup = Start-Process -FilePath $installer -ArgumentList $installArgs -Wait -PassThru"
-            .to_owned(),
-        "    if ($setup.ExitCode -ne 0) { throw \"Installer exited with code $($setup.ExitCode)\" }"
-            .to_owned(),
-        "    if (!(Test-Path -LiteralPath $current)) { throw 'Installed application was not found' }"
-            .to_owned(),
-        "    Start-Process -FilePath $current".to_owned(),
-        "    Remove-Item -LiteralPath $installer -Force".to_owned(),
-        "    if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force }".to_owned(),
-        "} catch {".to_owned(),
-        "    ($_ | Out-String) | Set-Content -LiteralPath $log".to_owned(),
-        "    if (Test-Path -LiteralPath $current) { Start-Process -FilePath $current }"
-            .to_owned(),
-        "} finally {".to_owned(),
-        "    if (Test-Path -LiteralPath $ready) { Remove-Item -LiteralPath $ready -Force }".to_owned(),
-        "    Remove-Item -LiteralPath $script -Force".to_owned(),
-        "}".to_owned(),
-    ]
-    .join("\n")
+/// Paths used by both platform helpers for the ready/log/script handshake.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+struct UpdaterPaths {
+    script: PathBuf,
+    ready: PathBuf,
+    log: PathBuf,
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn updater_paths(extension: &str) -> UpdaterPaths {
+    let temp = std::env::temp_dir();
+    let process_id = std::process::id();
+    UpdaterPaths {
+        script: temp.join(format!("pinkdown-update-{process_id}.{extension}")),
+        ready: temp.join(format!("pinkdown-update-{process_id}.ready")),
+        log: temp.join(format!("pinkdown-update-{process_id}.log")),
+    }
 }
 
 #[cfg(test)]
@@ -426,7 +448,10 @@ mod tests {
     #[test]
     fn tags_request_attaches_the_token_as_bearer_auth() {
         let authorization = received_authorization(Some("secret-token"));
-        assert_eq!(authorization.as_deref(), Some("Authorization: Bearer secret-token"));
+        assert_eq!(
+            authorization.as_deref(),
+            Some("Authorization: Bearer secret-token")
+        );
     }
 
     #[test]
@@ -506,7 +531,7 @@ mod tests {
 
     #[test]
     fn windows_installer_registers_markdown_and_opens_default_apps_confirmation() {
-        let installer = include_str!("../installer/pinkdown.iss");
+        let installer = include_str!("../../installer/pinkdown.iss");
 
         assert!(installer.contains("Software\\Classes\\.md\\OpenWithProgids"));
         assert!(installer.contains("Software\\RegisteredApplications"));
@@ -517,9 +542,9 @@ mod tests {
 
     #[test]
     fn mac_release_packages_a_dmg_with_a_retina_icon() {
-        let plist = include_str!("../installer/macos/Info.plist");
-        let packager = include_str!("../installer/macos/package.ps1");
-        let workflow = include_str!("../.github/workflows/release.yml");
+        let plist = include_str!("../../installer/macos/Info.plist");
+        let packager = include_str!("../../installer/macos/package.ps1");
+        let workflow = include_str!("../../.github/workflows/release.yml");
 
         assert!(plist.contains("<key>CFBundlePackageType</key>"));
         assert!(plist.contains("<string>APPL</string>"));
@@ -533,25 +558,12 @@ mod tests {
         assert!(workflow.contains("pinkdown-macos-x64.dmg"));
     }
 
-    #[cfg(target_os = "windows")]
     #[test]
-    fn installer_script_waits_then_runs_setup_in_the_existing_directory() {
-        use std::path::Path;
-
-        let script = windows_update_script(
-            42,
-            Path::new("pinkdown-setup.exe"),
-            Path::new("current.exe"),
-            Path::new("ready"),
-            Path::new("error.log"),
-            Path::new("update.ps1"),
-        );
-        assert!(script.contains("Set-Content -LiteralPath $ready"));
-        assert!(script.contains("Wait-Process -Id $parentId"));
-        assert!(script.contains("Start-Process -FilePath $installer"));
-        assert!(script.contains("'/DIR=\"' + $installDir + '\"'"));
-        assert!(script.contains("if ($setup.ExitCode -ne 0)"));
-        assert!(script.contains("Start-Process -FilePath $current"));
-        assert!(script.contains("Set-Content -LiteralPath $log"));
+    fn available_update_always_carries_a_tag() {
+        let available = AvailableUpdate {
+            version: Version::parse("1.2.3").unwrap(),
+            tag: "v1.2.3".into(),
+        };
+        assert_eq!(available.tag, "v1.2.3");
     }
 }

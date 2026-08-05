@@ -4,12 +4,12 @@ use eframe::egui::{self, Color32, FontFamily, FontId, RichText, TextFormat};
 use egui_commonmark::CommonMarkCache;
 
 use crate::{
-    dialog::{self, Choice, FontSettingsAction},
+    dialog::{self, Choice, FontSettingsAction, UpdateChoice, UpdatePromptMode},
     document::{pick_markdown_file, Document},
     preview,
     settings::Settings,
     theme::{self, BASE, FOAM, GOLD, HIGHLIGHT_LOW, IRIS, MUTED, ROSE, SUBTLE, SURFACE, TEXT},
-    update::{PollResult, UpdateChecker, UpdateOutcome},
+    update::{AUTO_INSTALL, PollResult, UpdateChecker, UpdateOutcome, UpdateUi},
 };
 
 #[cfg(target_os = "windows")]
@@ -31,7 +31,7 @@ pub struct PinkDown {
     allow_close: bool,
     markdown_cache: CommonMarkCache,
     update_checker: UpdateChecker,
-    update_staged: bool,
+    update_ui: UpdateUi,
     current_title: String,
     settings: Settings,
     /// Open font dialog; holds a draft typeface id until Apply / Cancel.
@@ -44,8 +44,8 @@ enum PendingAction {
     OpenDialog,
     OpenPath(PathBuf),
     Close,
-    #[cfg(target_os = "windows")]
-    Restart,
+    /// Quit so the staged updater can install (same close path, different copy).
+    RestartForUpdate,
 }
 
 impl PendingAction {
@@ -55,8 +55,9 @@ impl PendingAction {
                 "Save your changes before opening another document?"
             }
             Self::Close => "Save your changes before closing PinkDown?",
-            #[cfg(target_os = "windows")]
-            Self::Restart => "Save your changes before restarting to install the update?",
+            Self::RestartForUpdate => {
+                "Save your changes before restarting to install the update?"
+            }
         }
     }
 }
@@ -72,7 +73,7 @@ impl PinkDown {
             allow_close: false,
             markdown_cache: CommonMarkCache::default(),
             update_checker: UpdateChecker::default(),
-            update_staged: false,
+            update_ui: UpdateUi::Idle,
             current_title: "PinkDown".into(),
             settings,
             font_settings_draft: None,
@@ -128,12 +129,7 @@ impl PinkDown {
                 }
             }
             PendingAction::OpenPath(path) => self.open_path(path),
-            PendingAction::Close => {
-                self.allow_close = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-            }
-            #[cfg(target_os = "windows")]
-            PendingAction::Restart => {
+            PendingAction::Close | PendingAction::RestartForUpdate => {
                 self.allow_close = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
@@ -192,20 +188,114 @@ impl PinkDown {
         match self.update_checker.poll() {
             PollResult::Idle => {}
             PollResult::Pending => ctx.request_repaint_after(Duration::from_millis(100)),
-            PollResult::Ready(Err(error)) => self.status = format!("Update failed: {error}"),
+            PollResult::Ready(Err(error)) => {
+                // Restore a deferred install offer; otherwise return to Idle.
+                self.update_ui = match std::mem::take(&mut self.update_ui) {
+                    UpdateUi::Available(available) | UpdateUi::Downloading(available) => {
+                        UpdateUi::Available(available)
+                    }
+                    UpdateUi::Staged { version } => UpdateUi::Staged { version },
+                    UpdateUi::Idle | UpdateUi::Checking => UpdateUi::Idle,
+                };
+                self.status = format!("Update failed: {error}");
+            }
             PollResult::Ready(Ok(UpdateOutcome::UpToDate(version))) => {
+                self.update_ui = UpdateUi::Idle;
                 self.status = format!("PinkDown v{version} is up to date");
             }
-            #[cfg(target_os = "windows")]
-            PollResult::Ready(Ok(UpdateOutcome::InstallReady(version))) => {
-                self.update_staged = true;
-                self.status =
-                    format!("PinkDown v{version} is staged and will install when PinkDown closes");
-                self.request_action(PendingAction::Restart, ctx);
+            PollResult::Ready(Ok(UpdateOutcome::Available(available))) => {
+                self.status = format!("PinkDown v{} is available", available.version);
+                self.update_ui = UpdateUi::Available(available);
             }
-            #[cfg(not(target_os = "windows"))]
-            PollResult::Ready(Ok(UpdateOutcome::ManualUpdate(version))) => {
-                self.status = format!("PinkDown v{version} is available from GitHub Releases");
+            PollResult::Ready(Ok(UpdateOutcome::InstallReady(version))) => {
+                self.update_ui = UpdateUi::Staged {
+                    version: version.clone(),
+                };
+                self.status = format!(
+                    "PinkDown v{version} is staged and will install when PinkDown closes"
+                );
+                self.request_action(PendingAction::RestartForUpdate, ctx);
+            }
+        }
+    }
+
+    fn show_update_prompt(&mut self, ctx: &egui::Context) {
+        // Avoid stacking over unsaved-changes or font settings.
+        if self.pending_action.is_some() || self.font_settings_draft.is_some() {
+            return;
+        }
+        let UpdateUi::Available(available) = &self.update_ui else {
+            return;
+        };
+        let current = env!("CARGO_PKG_VERSION");
+        let latest = available.version.to_string();
+        let mode = if AUTO_INSTALL {
+            UpdatePromptMode::InstallAndRestart
+        } else {
+            UpdatePromptMode::OpenReleases
+        };
+        let choice = dialog::update_available(ctx, current, &latest, mode);
+
+        match choice {
+            Some(UpdateChoice::Update) => {
+                let UpdateUi::Available(available) =
+                    std::mem::replace(&mut self.update_ui, UpdateUi::Idle)
+                else {
+                    return;
+                };
+                if AUTO_INSTALL {
+                    let version = available.version.clone();
+                    if self.update_checker.start_install(available.clone()) {
+                        self.update_ui = UpdateUi::Downloading(available);
+                        self.status = format!("Downloading PinkDown v{version}\u{2026}");
+                    } else {
+                        // Restore the offer so Later / Update still work.
+                        self.update_ui = UpdateUi::Available(available);
+                        self.status = "An update operation is already in progress".into();
+                    }
+                } else {
+                    self.status = format!(
+                        "PinkDown v{} is available from GitHub Releases",
+                        available.version
+                    );
+                    open_github_releases();
+                }
+            }
+            Some(UpdateChoice::Later) => {
+                if let UpdateUi::Available(available) =
+                    std::mem::replace(&mut self.update_ui, UpdateUi::Idle)
+                {
+                    self.status = format!(
+                        "Update to v{} deferred \u{2014} use Check updates when ready",
+                        available.version
+                    );
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn start_update_check(&mut self) {
+        match &self.update_ui {
+            UpdateUi::Staged { version } => {
+                self.status = format!(
+                    "PinkDown v{version} is staged and will install when PinkDown closes"
+                );
+            }
+            UpdateUi::Downloading(available) => {
+                self.status = format!("Downloading PinkDown v{}\u{2026}", available.version);
+            }
+            UpdateUi::Available(available) => {
+                self.status = format!("PinkDown v{} is available", available.version);
+            }
+            UpdateUi::Checking => {
+                self.status = "Checking for updates\u{2026}".into();
+            }
+            UpdateUi::Idle => {
+                if self.update_checker.start() {
+                    self.update_ui = UpdateUi::Checking;
+                    self.status = "Checking for updates\u{2026}".into();
+                }
             }
         }
     }
@@ -256,7 +346,20 @@ impl eframe::App for PinkDown {
 
         self.show_confirmation(ctx);
         self.show_font_settings(ctx);
+        self.show_update_prompt(ctx);
     }
+}
+
+fn open_github_releases() {
+    let url = "https://github.com/3xian/PinkDown/releases";
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(url).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .spawn();
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
 }
 
 impl PinkDown {
@@ -279,9 +382,16 @@ impl PinkDown {
 
     fn show_toolbar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("window-toolbar")
-            .exact_height(64.0)
+            .exact_height(56.0)
             .show_separator_line(false)
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(20, 10)))
+            .frame(
+                egui::Frame::NONE.inner_margin(egui::Margin {
+                    left: 20,
+                    right: 20,
+                    top: 8,
+                    bottom: 4,
+                }),
+            )
             .show(ctx, |ui| {
                 // Drag region above the editor panels (custom chrome on Windows / macOS).
                 #[cfg(any(target_os = "windows", target_os = "macos"))]
@@ -330,12 +440,7 @@ impl PinkDown {
                         .on_hover_text("Check GitHub Releases for a newer version")
                         .clicked()
                     {
-                        if self.update_staged {
-                            self.status =
-                                "The staged update will install when PinkDown closes".into();
-                        } else if self.update_checker.start() {
-                            self.status = "Checking for updates…".into();
-                        }
+                        self.start_update_check();
                     }
 
                     #[cfg(target_os = "windows")]
@@ -386,7 +491,14 @@ impl PinkDown {
 
     fn show_editor(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.inner_margin(egui::Margin::symmetric(20, 8)))
+            .frame(
+                egui::Frame::NONE.inner_margin(egui::Margin {
+                    left: 20,
+                    right: 20,
+                    top: 2,
+                    bottom: 8,
+                }),
+            )
             .show(ctx, |ui| {
                 let available = ui.available_width();
                 ui.columns(2, |columns| {

@@ -170,6 +170,87 @@ fn dialog_heading(
     });
 }
 
+/// Choice from the update-available confirmation dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdateChoice {
+    /// Primary action: install (auto) or open the releases page (manual).
+    Update,
+    Later,
+}
+
+/// How the update prompt should present its primary action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UpdatePromptMode {
+    /// Download, stage, then quit PinkDown so the helper can install.
+    InstallAndRestart,
+    /// Open the GitHub Releases page for a manual install.
+    OpenReleases,
+}
+
+/// Asks whether to proceed with a newer PinkDown release.
+pub fn update_available(
+    ctx: &egui::Context,
+    current_version: &str,
+    latest_version: &str,
+    mode: UpdatePromptMode,
+) -> Option<UpdateChoice> {
+    let modal = egui::Modal::new(egui::Id::new("update-available-modal"))
+        .backdrop_color(Color32::from_black_alpha(150))
+        .frame(modal_frame())
+        .show(ctx, |ui| {
+            ui.set_width(390.0);
+            let (subtitle, body, primary_label, primary_width) = match mode {
+                UpdatePromptMode::InstallAndRestart => (
+                    format!("PinkDown v{latest_version} is ready to install."),
+                    format!(
+                        "You are running v{current_version}. Update downloads the package now; \
+                         PinkDown will quit afterward so installation can finish, then relaunch."
+                    ),
+                    "Update",
+                    96.0_f32,
+                ),
+                UpdatePromptMode::OpenReleases => (
+                    format!("PinkDown v{latest_version} is available on GitHub."),
+                    format!(
+                        "You are running v{current_version}. Open the releases page to download \
+                         it, or choose Later to keep this version."
+                    ),
+                    "Open Releases",
+                    124.0_f32,
+                ),
+            };
+            dialog_heading(
+                ui,
+                "\u{2191}",
+                18.0,
+                FOAM,
+                "Update available",
+                &subtitle,
+            );
+            ui.add_space(18.0);
+            message_panel(ui, &body);
+            ui.add_space(20.0);
+
+            let mut choice = None;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if button(ui, primary_label, primary_width, ButtonKind::Primary).clicked()
+                    || ui.input_mut(|input| {
+                        input.consume_key(egui::Modifiers::NONE, egui::Key::Enter)
+                    })
+                {
+                    choice = Some(UpdateChoice::Update);
+                }
+                if button(ui, "Later", 76.0, ButtonKind::Secondary).clicked() {
+                    choice = Some(UpdateChoice::Later);
+                }
+            });
+            choice
+        });
+
+    let should_cancel = modal.should_close();
+    modal.inner.or(should_cancel.then_some(UpdateChoice::Later))
+}
+
 /// Result of the font settings modal for one frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FontSettingsAction {
