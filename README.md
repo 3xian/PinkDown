@@ -6,6 +6,8 @@
 
 PinkDown is a fast, sleek, native split-pane Markdown editor and reader for Windows and macOS, built in Rust for instant startup and a polished desktop experience. Edit Markdown source beside a live preview in a calm Rosé Pine interface—without a browser, account, or workspace setup.
 
+[Website](https://3xian.github.io/PinkDown/) · [Download the latest release](https://github.com/3xian/PinkDown/releases/latest)
+
 ![PinkDown editor showing Markdown source and live preview](docs/assets/pinkdown-screenshot.webp)
 
 ## Highlights
