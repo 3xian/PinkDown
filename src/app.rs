@@ -4,9 +4,10 @@ use eframe::egui::{self, Color32, FontFamily, FontId, RichText, TextFormat};
 use egui_commonmark::CommonMarkCache;
 
 use crate::{
-    dialog::{self, Choice},
+    dialog::{self, Choice, FontSettingsAction},
     document::{pick_markdown_file, Document},
     preview,
+    settings::Settings,
     theme::{self, BASE, FOAM, GOLD, HIGHLIGHT_LOW, IRIS, MUTED, ROSE, SUBTLE, SURFACE, TEXT},
     update::{PollResult, UpdateChecker, UpdateOutcome},
 };
@@ -32,6 +33,9 @@ pub struct PinkDown {
     update_checker: UpdateChecker,
     update_staged: bool,
     current_title: String,
+    settings: Settings,
+    /// Open font dialog; holds a draft typeface id until Apply / Cancel.
+    font_settings_draft: Option<String>,
     #[cfg(target_os = "windows")]
     native_frame_passes: u8,
 }
@@ -59,7 +63,8 @@ impl PendingAction {
 
 impl PinkDown {
     pub fn new(cc: &eframe::CreationContext<'_>, initial_path: Option<PathBuf>) -> Self {
-        theme::configure(&cc.egui_ctx);
+        let settings = load_settings();
+        theme::configure(&cc.egui_ctx, &settings.preferred_font);
         let mut app = Self {
             document: Document::default(),
             status: "Ready to write".into(),
@@ -69,6 +74,8 @@ impl PinkDown {
             update_checker: UpdateChecker::default(),
             update_staged: false,
             current_title: "PinkDown".into(),
+            settings,
+            font_settings_draft: None,
             #[cfg(target_os = "windows")]
             native_frame_passes: 0,
         };
@@ -76,6 +83,32 @@ impl PinkDown {
             app.open_path(path);
         }
         app
+    }
+
+    fn apply_font_settings(&mut self, draft: String, ctx: &egui::Context) {
+        let preferred = theme::normalize_font_preference(&draft);
+        let changed = preferred != self.settings.preferred_font;
+        self.settings.preferred_font = preferred;
+        self.settings.save();
+        if changed {
+            theme::configure_fonts(ctx, &self.settings.preferred_font);
+            self.status = format!(
+                "Font set to {}",
+                theme::font_label(&self.settings.preferred_font)
+            );
+        }
+        self.font_settings_draft = None;
+    }
+
+    fn show_font_settings(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.font_settings_draft.take() else {
+            return;
+        };
+        match dialog::font_settings(ctx, &mut draft) {
+            FontSettingsAction::KeepOpen => self.font_settings_draft = Some(draft),
+            FontSettingsAction::Apply => self.apply_font_settings(draft, ctx),
+            FontSettingsAction::Cancel => self.font_settings_draft = None,
+        }
     }
 
     fn request_action(&mut self, action: PendingAction, ctx: &egui::Context) {
@@ -222,6 +255,7 @@ impl eframe::App for PinkDown {
         self.show_editor(ctx);
 
         self.show_confirmation(ctx);
+        self.show_font_settings(ctx);
     }
 }
 
@@ -285,6 +319,12 @@ impl PinkDown {
                         .clicked()
                     {
                         self.save(true);
+                    }
+                    if toolbar_button(ui, "Font", 52.0)
+                        .on_hover_text("Choose the UI and preview typeface")
+                        .clicked()
+                    {
+                        self.font_settings_draft = Some(self.settings.preferred_font.clone());
                     }
                     if toolbar_button(ui, "Check updates", 96.0)
                         .on_hover_text("Check GitHub Releases for a newer version")
@@ -360,6 +400,17 @@ impl PinkDown {
                 });
             });
     }
+}
+
+/// Load preferences and coerce any stale typeface id back to Auto.
+fn load_settings() -> Settings {
+    let mut settings = Settings::load();
+    let preferred = theme::normalize_font_preference(&settings.preferred_font);
+    if preferred != settings.preferred_font {
+        settings.preferred_font = preferred;
+        settings.save();
+    }
+    settings
 }
 
 fn paint_window_shell(ctx: &egui::Context) {

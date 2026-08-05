@@ -1,8 +1,12 @@
 use std::borrow::Cow;
 use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, FontId};
+
+/// Sentinel for bundled fonts + the original Auto CJK fallback chain.
+pub const FONT_AUTO: &str = "auto";
 
 pub const BASE: Color32 = Color32::from_rgb(25, 23, 36);
 pub const SURFACE: Color32 = Color32::from_rgb(31, 29, 46);
@@ -38,8 +42,8 @@ pub fn icon_data() -> egui::IconData {
     }
 }
 
-pub fn configure(ctx: &egui::Context) {
-    configure_fonts(ctx);
+pub fn configure(ctx: &egui::Context, preferred_font: &str) {
+    configure_fonts(ctx, preferred_font);
 
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::dark();
@@ -154,7 +158,211 @@ pub fn configure_preview(ui: &mut egui::Ui) {
 /// would require a dedicated patched font family for those surfaces.
 const EXTRA_LINE_GAP_EM: f32 = 0.15;
 
-fn configure_fonts(ctx: &egui::Context) {
+/// A system face PinkDown can load when the file is present on disk.
+#[derive(Clone, Copy, Debug)]
+pub struct FontOption {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub path: &'static str,
+}
+
+/// How a system face is installed into the proportional family.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InstallMode {
+    /// Append as CJK / missing-glyph fallback (Auto).
+    Fallback,
+    /// Lead proportional text (explicit user choice).
+    Primary,
+}
+
+/// Coerce a stored preference to a known, loadable id.
+///
+/// Unknown ids and missing files become [`FONT_AUTO`] so the UI label and the
+/// loaded face cannot disagree.
+pub fn normalize_font_preference(preferred: &str) -> String {
+    let preferred = preferred.trim();
+    if preferred.is_empty() || preferred == FONT_AUTO {
+        return FONT_AUTO.to_owned();
+    }
+    if font_catalog()
+        .iter()
+        .any(|font| font.id == preferred && Path::new(font.path).is_file())
+    {
+        preferred.to_owned()
+    } else {
+        FONT_AUTO.to_owned()
+    }
+}
+
+pub fn font_label(id: &str) -> String {
+    if id == FONT_AUTO {
+        return "Auto".to_owned();
+    }
+    font_catalog()
+        .iter()
+        .find(|font| font.id == id)
+        .map(|font| font.label.to_owned())
+        .unwrap_or_else(|| id.to_owned())
+}
+
+/// Catalog entries whose files exist on this machine (for the settings picker).
+pub fn available_fonts() -> Vec<&'static FontOption> {
+    font_catalog()
+        .iter()
+        .filter(|font| Path::new(font.path).is_file())
+        .collect()
+}
+
+/// Full picker catalog (Auto is not listed here — the UI adds it separately).
+fn font_catalog() -> &'static [FontOption] {
+    #[cfg(target_os = "windows")]
+    {
+        &[
+            // Auto chain first (historical order: SimHei → YaHei → SimSun).
+            FontOption {
+                id: "simhei",
+                label: "SimHei",
+                path: r"C:\Windows\Fonts\simhei.ttf",
+            },
+            FontOption {
+                id: "yahei",
+                label: "Microsoft YaHei",
+                path: r"C:\Windows\Fonts\msyh.ttc",
+            },
+            FontOption {
+                id: "simsun",
+                label: "SimSun",
+                path: r"C:\Windows\Fonts\simsun.ttc",
+            },
+            FontOption {
+                id: "kaiu",
+                label: "KaiTi",
+                path: r"C:\Windows\Fonts\simkai.ttf",
+            },
+            FontOption {
+                id: "fangsong",
+                label: "FangSong",
+                path: r"C:\Windows\Fonts\simfang.ttf",
+            },
+            FontOption {
+                id: "segoeui",
+                label: "Segoe UI",
+                path: r"C:\Windows\Fonts\segoeui.ttf",
+            },
+        ]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            FontOption {
+                id: "pingfang",
+                label: "PingFang",
+                path: "/System/Library/Fonts/PingFang.ttc",
+            },
+            FontOption {
+                id: "heiti",
+                label: "Heiti",
+                path: "/System/Library/Fonts/STHeiti Light.ttc",
+            },
+            FontOption {
+                id: "songti",
+                label: "Songti",
+                path: "/System/Library/Fonts/Supplemental/Songti.ttc",
+            },
+            FontOption {
+                id: "kaiti",
+                label: "Kaiti",
+                path: "/System/Library/Fonts/Supplemental/Kaiti.ttc",
+            },
+            FontOption {
+                id: "sf-pro",
+                label: "SF Pro",
+                path: "/System/Library/Fonts/SFNS.ttf",
+            },
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        &[
+            FontOption {
+                id: "noto-cjk",
+                label: "Noto Sans CJK",
+                path: "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            },
+            FontOption {
+                id: "noto-cjk-tt",
+                label: "Noto Sans CJK (truetype)",
+                path: "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            },
+            FontOption {
+                id: "wqy-microhei",
+                label: "WenQuanYi Micro Hei",
+                path: "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+            },
+            FontOption {
+                id: "dejavu",
+                label: "DejaVu Sans",
+                path: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            },
+        ]
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        &[]
+    }
+}
+
+/// Auto fallback chain only — same order as pre-settings PinkDown.
+fn auto_candidates() -> &'static [FontOption] {
+    #[cfg(target_os = "windows")]
+    {
+        // Original: simhei.ttf → msyh.ttc → simsun.ttc
+        &font_catalog()[..3]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Original: PingFang → STHeiti Light
+        &font_catalog()[..2]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Original: Noto opentype → Noto truetype
+        &font_catalog()[..2]
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        &[]
+    }
+}
+
+fn resolve_system_font(preferred: &str) -> Option<(&'static str, InstallMode)> {
+    let preferred = preferred.trim();
+    if preferred.is_empty() || preferred == FONT_AUTO {
+        return auto_candidates()
+            .iter()
+            .find(|font| Path::new(font.path).is_file())
+            .map(|font| (font.path, InstallMode::Fallback));
+    }
+    font_catalog()
+        .iter()
+        .find(|font| font.id == preferred && Path::new(font.path).is_file())
+        .map(|font| (font.path, InstallMode::Primary))
+}
+
+/// Load egui's bundled fonts (with relaxed line gap) and attach the preferred
+/// system face.
+///
+/// - **Auto**: first existing entry of the original candidate chain is appended
+///   as a CJK / missing-glyph fallback so the bundled proportional font stays
+///   primary for Latin UI text.
+/// - **Explicit choice**: that face leads the proportional family.
+/// - **Monospace** always keeps Hack first; the system face is only a fallback
+///   so code stays monospaced.
+///
+/// System faces are also line-gap patched when they are single-font sfnt files.
+/// TrueType Collections (`.ttc`) typically lack a top-level `hhea` and are left
+/// unchanged by [`patch_line_gap`].
+pub fn configure_fonts(ctx: &egui::Context, preferred_font: &str) {
     let mut fonts = FontDefinitions::default();
 
     for data in fonts.font_data.values_mut() {
@@ -166,24 +374,31 @@ fn configure_fonts(ctx: &egui::Context) {
         }
     }
 
-    if let Some(bytes) = font_candidates()
-        .iter()
-        .find_map(|path| fs::read(path).ok())
-    {
-        let name = "system-cjk".to_owned();
-        fonts
-            .font_data
-            .insert(name.clone(), FontData::from_owned(bytes).into());
-        fonts
-            .families
-            .get_mut(&FontFamily::Proportional)
-            .expect("default proportional family")
-            .push(name.clone());
-        fonts
-            .families
-            .get_mut(&FontFamily::Monospace)
-            .expect("default monospace family")
-            .push(name);
+    if let Some((path, mode)) = resolve_system_font(preferred_font) {
+        if let Ok(bytes) = fs::read(path) {
+            let name = "system-ui".to_owned();
+            // Single-font TTF/OTF gain the same line gap as bundled faces; TTC
+            // collections usually no-op inside patch_line_gap (no top-level hhea).
+            let patched = patch_line_gap(bytes, EXTRA_LINE_GAP_EM);
+            fonts
+                .font_data
+                .insert(name.clone(), FontData::from_owned(patched).into());
+
+            let proportional = fonts
+                .families
+                .get_mut(&FontFamily::Proportional)
+                .expect("default proportional family");
+            match mode {
+                InstallMode::Fallback => proportional.push(name.clone()),
+                InstallMode::Primary => proportional.insert(0, name.clone()),
+            }
+
+            fonts
+                .families
+                .get_mut(&FontFamily::Monospace)
+                .expect("default monospace family")
+                .push(name);
+        }
     }
 
     ctx.set_fonts(fonts);
@@ -276,36 +491,6 @@ fn bump_i16(bytes: &mut [u8], offset: usize, delta: i16) {
     let value = i16::from_be_bytes([bytes[offset], bytes[offset + 1]]);
     let value = value.saturating_add(delta);
     bytes[offset..offset + 2].copy_from_slice(&value.to_be_bytes());
-}
-
-#[cfg(target_os = "windows")]
-fn font_candidates() -> &'static [&'static str] {
-    &[
-        r"C:\Windows\Fonts\simhei.ttf",
-        r"C:\Windows\Fonts\msyh.ttc",
-        r"C:\Windows\Fonts\simsun.ttc",
-    ]
-}
-
-#[cfg(target_os = "macos")]
-fn font_candidates() -> &'static [&'static str] {
-    &[
-        "/System/Library/Fonts/PingFang.ttc",
-        "/System/Library/Fonts/STHeiti Light.ttc",
-    ]
-}
-
-#[cfg(target_os = "linux")]
-fn font_candidates() -> &'static [&'static str] {
-    &[
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    ]
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-fn font_candidates() -> &'static [&'static str] {
-    &[]
 }
 
 #[cfg(test)]
@@ -413,5 +598,54 @@ mod tests {
                 "line gap grew by {actual}pt, expected {expected}pt"
             );
         }
+    }
+
+    #[test]
+    fn normalize_maps_empty_and_unknown_to_auto() {
+        assert_eq!(normalize_font_preference(""), FONT_AUTO);
+        assert_eq!(normalize_font_preference("   "), FONT_AUTO);
+        assert_eq!(normalize_font_preference("not-a-real-font"), FONT_AUTO);
+        assert_eq!(normalize_font_preference(FONT_AUTO), FONT_AUTO);
+    }
+
+    #[test]
+    fn normalize_keeps_available_catalog_ids() {
+        for font in available_fonts() {
+            assert_eq!(normalize_font_preference(font.id), font.id);
+        }
+    }
+
+    #[test]
+    fn auto_resolves_as_fallback_not_primary() {
+        match resolve_system_font(FONT_AUTO) {
+            None => {}
+            Some((_, mode)) => assert_eq!(mode, InstallMode::Fallback),
+        }
+    }
+
+    #[test]
+    fn explicit_available_font_resolves_as_primary() {
+        let Some(font) = available_fonts().into_iter().next() else {
+            return;
+        };
+        let resolved = resolve_system_font(font.id).expect("available font resolves");
+        assert_eq!(resolved.0, font.path);
+        assert_eq!(resolved.1, InstallMode::Primary);
+    }
+
+    #[test]
+    fn missing_explicit_font_does_not_silently_resolve() {
+        assert!(resolve_system_font("not-a-real-font").is_none());
+    }
+
+    #[test]
+    fn auto_candidate_order_matches_historical_chain() {
+        let auto_ids: Vec<&str> = auto_candidates().iter().map(|f| f.id).collect();
+        #[cfg(target_os = "windows")]
+        assert_eq!(auto_ids, ["simhei", "yahei", "simsun"]);
+        #[cfg(target_os = "macos")]
+        assert_eq!(auto_ids, ["pingfang", "heiti"]);
+        #[cfg(target_os = "linux")]
+        assert_eq!(auto_ids, ["noto-cjk", "noto-cjk-tt"]);
     }
 }

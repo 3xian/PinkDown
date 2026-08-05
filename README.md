@@ -13,6 +13,7 @@ PinkDown is a sleek, native split-pane Markdown editor and reader for Windows an
 - Side-by-side Markdown source and rendered preview
 - Open, save, and save-as support for `.md`, `.markdown`, `.mdx`, and `.txt` files
 - Clear unsaved-change indicator and familiar `Ctrl/Cmd + O` / `Ctrl/Cmd + S` / `Ctrl/Cmd + Shift + S` shortcuts
+- Choose a system typeface for the UI and preview (persisted across launches)
 - Markdown rendering for headings, emphasis, links, inline and fenced code, lists, task items, block quotes, dividers, and tables
 - UTF-8 and UTF-16 file decoding with encoding feedback in the status bar
 - Native, resizable Windows window with drag-and-drop file opening

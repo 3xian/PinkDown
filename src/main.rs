@@ -4,6 +4,7 @@ mod app;
 mod dialog;
 mod document;
 mod preview;
+mod settings;
 mod theme;
 mod update;
 mod window;
