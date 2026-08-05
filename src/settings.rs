@@ -2,11 +2,11 @@ use std::{fs, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Persisted app preferences. Font *catalog* and install policy live in `theme`.
+/// Persisted app preferences. Font discovery and install policy live in `theme`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Preferred typeface id (`"auto"` or a catalog entry id from `theme`).
+    /// Preferred typeface (`"auto"` or absolute path of a system font file).
     pub preferred_font: String,
 }
 

@@ -10,7 +10,10 @@ use std::{
     fmt,
     path::{Path, PathBuf},
     process::Child,
-    sync::mpsc::{self, Receiver, TryRecvError},
+    sync::{
+        mpsc::{self, Receiver, TryRecvError},
+        Arc, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -66,9 +69,66 @@ pub enum UpdateOutcome {
     InstallReady(Version),
 }
 
+/// Byte-level progress while a release package is downloading (or verifying).
+#[derive(Clone, Copy, Debug)]
+pub struct DownloadProgress {
+    pub downloaded: u64,
+    /// `Content-Length` when the server provides it.
+    pub total: Option<u64>,
+    pub phase: DownloadPhase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DownloadPhase {
+    Downloading,
+    Verifying,
+}
+
+impl DownloadProgress {
+    /// Status-bar line for an in-flight install of `version`.
+    pub fn status_line(&self, version: &Version) -> String {
+        match self.phase {
+            DownloadPhase::Verifying => {
+                format!("Verifying PinkDown v{version}\u{2026}")
+            }
+            DownloadPhase::Downloading => match self.total.filter(|&total| total > 0) {
+                Some(total) => {
+                    let pct = ((self.downloaded as f64 / total as f64) * 100.0)
+                        .clamp(0.0, 100.0)
+                        .round() as u32;
+                    format!(
+                        "Downloading PinkDown v{version}\u{2026} {} / {} ({pct}%)",
+                        format_bytes(self.downloaded),
+                        format_bytes(total),
+                    )
+                }
+                None => format!(
+                    "Downloading PinkDown v{version}\u{2026} {}",
+                    format_bytes(self.downloaded),
+                ),
+            },
+        }
+    }
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let n = bytes as f64;
+    if n >= MB {
+        format!("{:.1} MB", n / MB)
+    } else if n >= KB {
+        format!("{:.0} KB", n / KB)
+    } else {
+        format!("{bytes} B")
+    }
+}
+
 pub enum PollResult {
     Idle,
     Pending,
+    /// Latest download progress since the previous poll (install path only).
+    Progress(DownloadProgress),
     Ready(Result<UpdateOutcome, UpdateError>),
 }
 
@@ -88,13 +148,16 @@ pub enum UpdateUi {
 
 #[derive(Default)]
 pub struct UpdateChecker {
+    /// Finished outcome only — progress is a single shared slot so a stalled UI
+    /// never queues unbounded download events.
     receiver: Option<Receiver<Result<UpdateOutcome, UpdateError>>>,
+    progress: Option<Arc<Mutex<Option<DownloadProgress>>>>,
 }
 
 impl UpdateChecker {
     /// Starts a background version check against GitHub tags (no download).
     pub fn start(&mut self) -> bool {
-        self.spawn(check_for_update)
+        self.spawn(|_progress| check_for_update())
     }
 
     /// Downloads the release package, verifies its checksum, and schedules
@@ -103,41 +166,66 @@ impl UpdateChecker {
         if !AUTO_INSTALL {
             return false;
         }
-        self.spawn(move || download_and_stage_update(available))
+        self.spawn(move |progress| download_and_stage_update(available, progress))
     }
 
     pub fn poll(&mut self) -> PollResult {
         let Some(receiver) = &self.receiver else {
             return PollResult::Idle;
         };
+
         match receiver.try_recv() {
             Ok(result) => {
                 self.receiver = None;
+                self.progress = None;
                 PollResult::Ready(result)
             }
-            Err(TryRecvError::Empty) => PollResult::Pending,
+            Err(TryRecvError::Empty) => {
+                let latest = self
+                    .progress
+                    .as_ref()
+                    .and_then(|slot| slot.lock().ok()?.take());
+                match latest {
+                    Some(progress) => PollResult::Progress(progress),
+                    None => PollResult::Pending,
+                }
+            }
             Err(TryRecvError::Disconnected) => {
                 self.receiver = None;
-                PollResult::Ready(Err(UpdateError::new("Update check did not complete")))
+                self.progress = None;
+                PollResult::Ready(Err(UpdateError::new(
+                    "Update check did not complete",
+                )))
             }
         }
     }
 
     fn spawn(
         &mut self,
-        work: impl FnOnce() -> Result<UpdateOutcome, UpdateError> + Send + 'static,
+        work: impl FnOnce(ProgressCallback) -> Result<UpdateOutcome, UpdateError> + Send + 'static,
     ) -> bool {
         if self.receiver.is_some() {
             return false;
         }
         let (sender, receiver) = mpsc::channel();
+        let progress = Arc::new(Mutex::new(None));
         self.receiver = Some(receiver);
+        self.progress = Some(Arc::clone(&progress));
         thread::spawn(move || {
-            let _ = sender.send(work());
+            let on_progress: ProgressCallback = Box::new(move |value| {
+                if let Ok(mut slot) = progress.lock() {
+                    *slot = Some(value);
+                }
+            });
+            let result = work(on_progress);
+            let _ = sender.send(result);
         });
         true
     }
 }
+
+/// Callback used by the download worker to report progress to the UI thread.
+type ProgressCallback = Box<dyn FnMut(DownloadProgress) + Send>;
 
 #[derive(Deserialize)]
 struct GitHubTag {
@@ -159,10 +247,13 @@ fn check_for_update() -> Result<UpdateOutcome, UpdateError> {
     }))
 }
 
-fn download_and_stage_update(available: AvailableUpdate) -> Result<UpdateOutcome, UpdateError> {
+fn download_and_stage_update(
+    available: AvailableUpdate,
+    mut on_progress: ProgressCallback,
+) -> Result<UpdateOutcome, UpdateError> {
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        let downloaded = download_release_asset(&available.tag)?;
+        let downloaded = download_release_asset(&available.tag, &mut on_progress)?;
         let schedule_result = {
             #[cfg(target_os = "windows")]
             {
@@ -183,6 +274,7 @@ fn download_and_stage_update(available: AvailableUpdate) -> Result<UpdateOutcome
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         let _ = available;
+        let _ = on_progress;
         Err(UpdateError::new(
             "Automatic install is not supported on this platform",
         ))
@@ -254,8 +346,14 @@ fn version_from_tag(tag: &str) -> Result<Version, semver::Error> {
 }
 
 #[cfg(any(target_os = "windows", target_os = "macos"))]
-fn download_release_asset(tag: &str) -> Result<PathBuf, UpdateError> {
-    use std::{fs, io, io::Read};
+fn download_release_asset(
+    tag: &str,
+    on_progress: &mut ProgressCallback,
+) -> Result<PathBuf, UpdateError> {
+    use std::{
+        fs,
+        io::{Read, Write},
+    };
 
     let asset_url = format!("{GITHUB_RELEASES_URL}/{tag}/{RELEASE_ASSET}");
     let checksum_url = format!("{asset_url}.sha256");
@@ -269,20 +367,69 @@ fn download_release_asset(tag: &str) -> Result<PathBuf, UpdateError> {
         std::env::temp_dir().join(format!("pinkdown-{tag}-{}-{RELEASE_ASSET}", std::process::id()));
 
     let result = (|| {
+        const MAX_BYTES: u64 = 256 * 1024 * 1024;
+
         let response = ureq::get(&asset_url)
             .set("User-Agent", PINKDOWN_USER_AGENT)
             .call()
             .map_err(|error| UpdateError::new(format!("Could not download {tag}: {error}")))?;
-        let mut source = response.into_reader().take(256 * 1024 * 1024 + 1);
+        let total = response
+            .header("Content-Length")
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|&len| len > 0 && len <= MAX_BYTES);
+        let mut source = response.into_reader();
         let mut file = fs::File::create(&destination)
             .map_err(|error| UpdateError::new(format!("Could not create update file: {error}")))?;
-        let bytes_written = io::copy(&mut source, &mut file)
-            .map_err(|error| UpdateError::new(format!("Could not save update: {error}")))?;
-        if bytes_written > 256 * 1024 * 1024 {
-            return Err(UpdateError::new(
-                "Downloaded update exceeds the 256 MiB limit",
-            ));
+
+        let mut buffer = [0u8; 64 * 1024];
+        let mut downloaded = 0u64;
+        let mut last_report = Instant::now();
+
+        // Immediate 0% so the status bar is not stuck on a bare "Downloading…".
+        on_progress(DownloadProgress {
+            downloaded: 0,
+            total,
+            phase: DownloadPhase::Downloading,
+        });
+
+        loop {
+            let bytes_read = source
+                .read(&mut buffer)
+                .map_err(|error| UpdateError::new(format!("Could not save update: {error}")))?;
+            if bytes_read == 0 {
+                break;
+            }
+            let next = downloaded.saturating_add(bytes_read as u64);
+            if next > MAX_BYTES {
+                return Err(UpdateError::new(
+                    "Downloaded update exceeds the 256 MiB limit",
+                ));
+            }
+            file.write_all(&buffer[..bytes_read])
+                .map_err(|error| UpdateError::new(format!("Could not save update: {error}")))?;
+            downloaded = next;
+
+            // Throttle UI events (~10/s); a final snapshot is sent after the loop.
+            if last_report.elapsed() >= Duration::from_millis(100) {
+                on_progress(DownloadProgress {
+                    downloaded,
+                    total,
+                    phase: DownloadPhase::Downloading,
+                });
+                last_report = Instant::now();
+            }
         }
+
+        on_progress(DownloadProgress {
+            downloaded,
+            total: total.or(Some(downloaded)),
+            phase: DownloadPhase::Downloading,
+        });
+        on_progress(DownloadProgress {
+            downloaded,
+            total: total.or(Some(downloaded)),
+            phase: DownloadPhase::Verifying,
+        });
 
         let actual_checksum = sha256_file(&destination)?;
         if actual_checksum != expected_checksum {
@@ -565,5 +712,44 @@ mod tests {
             tag: "v1.2.3".into(),
         };
         assert_eq!(available.tag, "v1.2.3");
+    }
+
+    #[test]
+    fn download_progress_status_includes_percent_when_total_is_known() {
+        let version = Version::parse("1.6.0").unwrap();
+        let line = DownloadProgress {
+            downloaded: 5 * 1024 * 1024,
+            total: Some(20 * 1024 * 1024),
+            phase: DownloadPhase::Downloading,
+        }
+        .status_line(&version);
+        assert!(line.contains("Downloading PinkDown v1.6.0"));
+        assert!(line.contains("25%"), "line was: {line}");
+        assert!(line.contains("5.0 MB") && line.contains("20.0 MB"), "line was: {line}");
+    }
+
+    #[test]
+    fn download_progress_status_without_total_shows_bytes_only() {
+        let version = Version::parse("1.6.0").unwrap();
+        let line = DownloadProgress {
+            downloaded: 1500,
+            total: None,
+            phase: DownloadPhase::Downloading,
+        }
+        .status_line(&version);
+        assert!(line.contains("1 KB") || line.contains("1500 B"), "line was: {line}");
+        assert!(!line.contains('%'), "line was: {line}");
+    }
+
+    #[test]
+    fn download_progress_verifying_phase_is_distinct() {
+        let version = Version::parse("1.6.0").unwrap();
+        let line = DownloadProgress {
+            downloaded: 10,
+            total: Some(10),
+            phase: DownloadPhase::Verifying,
+        }
+        .status_line(&version);
+        assert!(line.contains("Verifying"), "line was: {line}");
     }
 }

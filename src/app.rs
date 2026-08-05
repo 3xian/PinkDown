@@ -239,6 +239,13 @@ impl PinkDown {
         match self.update_checker.poll() {
             PollResult::Idle => {}
             PollResult::Pending => ctx.request_repaint_after(Duration::from_millis(100)),
+            PollResult::Progress(progress) => {
+                if let UpdateUi::Downloading(available) = &self.update_ui {
+                    self.status = progress.status_line(&available.version);
+                }
+                // Keep the UI ticking so the status bar advances during download.
+                ctx.request_repaint_after(Duration::from_millis(50));
+            }
             PollResult::Ready(Err(error)) => {
                 // Restore a deferred install offer; otherwise return to Idle.
                 self.update_ui = match std::mem::take(&mut self.update_ui) {

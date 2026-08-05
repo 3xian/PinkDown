@@ -264,9 +264,9 @@ pub enum FontSettingsAction {
 
 /// Modal for choosing the preferred UI / preview typeface.
 ///
-/// `preferred_font` is a draft id (`"auto"` or a catalog entry). Preview of the
-/// unapplied face is intentionally omitted: egui applies fonts globally, and a
-/// label that only shows the *name* would be misleading.
+/// `preferred_font` is a draft id (`"auto"` or an absolute system font path).
+/// Preview of the unapplied face is intentionally omitted: egui applies fonts
+/// globally, and a label that only shows the *name* would be misleading.
 pub fn font_settings(ctx: &egui::Context, preferred_font: &mut String) -> FontSettingsAction {
     let modal = egui::Modal::new(egui::Id::new("font-settings-modal"))
         .backdrop_color(Color32::from_black_alpha(150))
@@ -323,6 +323,7 @@ fn font_picker(ui: &mut egui::Ui, preferred_font: &mut String) {
 
             egui::ComboBox::from_id_salt("preferred-font")
                 .width(ui.available_width().max(120.0))
+                .height(280.0)
                 .selected_text(RichText::new(current_label).size(13.0).color(TEXT))
                 .show_ui(ui, |ui| {
                     ui.selectable_value(
@@ -333,8 +334,8 @@ fn font_picker(ui: &mut egui::Ui, preferred_font: &mut String) {
                     for font in available {
                         ui.selectable_value(
                             preferred_font,
-                            font.id.to_owned(),
-                            RichText::new(font.label).size(13.0),
+                            font.id.clone(),
+                            RichText::new(&font.label).size(13.0),
                         );
                     }
                 });
@@ -342,9 +343,10 @@ fn font_picker(ui: &mut egui::Ui, preferred_font: &mut String) {
             ui.add_space(8.0);
             ui.label(
                 RichText::new(
-                    "Auto keeps the built-in Latin face and uses the first available \
-                     system font for CJK glyphs. An explicit choice becomes the main \
-                     UI and preview typeface. The source editor stays monospaced for Latin text.",
+                    "Lists every font installed on this computer. Auto keeps the built-in \
+                     Latin face and uses the first available system font for CJK glyphs. \
+                     An explicit choice becomes the main UI and preview typeface. The \
+                     source editor stays monospaced for Latin text.",
                 )
                 .size(11.0)
                 .color(SUBTLE),

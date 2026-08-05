@@ -1,7 +1,8 @@
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, FontId};
 
@@ -158,12 +159,25 @@ pub fn configure_preview(ui: &mut egui::Ui) {
 /// would require a dedicated patched font family for those surfaces.
 const EXTRA_LINE_GAP_EM: f32 = 0.15;
 
-/// A system face PinkDown can load when the file is present on disk.
-#[derive(Clone, Copy, Debug)]
+/// A system face discovered on disk (picker entry).
+///
+/// `id` and `path` are the same store form: absolute path with Windows
+/// `\\?\` prefixes stripped, suitable for `settings.json` and `fs::read`.
+/// `label` is a friendly name when known, otherwise the file stem.
+#[derive(Clone, Debug)]
 pub struct FontOption {
-    pub id: &'static str,
-    pub label: &'static str,
-    pub path: &'static str,
+    pub id: String,
+    pub label: String,
+    pub path: String,
+}
+
+/// Discovered faces plus O(1) lookup indexes built once at first use.
+struct FontCatalog {
+    fonts: Vec<FontOption>,
+    /// [`font_path_key`] → index into `fonts`.
+    by_key: HashMap<String, usize>,
+    /// Lowercase file stem → indices sorted by face preference (regular first).
+    by_stem: HashMap<String, Vec<usize>>,
 }
 
 /// How a system face is installed into the proportional family.
@@ -177,176 +191,476 @@ enum InstallMode {
 
 /// Coerce a stored preference to a known, loadable id.
 ///
-/// Unknown ids and missing files become [`FONT_AUTO`] so the UI label and the
+/// Accepts absolute paths (current format), bare file stems, and a few legacy
+/// short ids from earlier PinkDown releases. A loadable path that discovery
+/// missed (custom install dir) is kept in store form rather than forced to
+/// Auto. Unknown / missing faces become [`FONT_AUTO`] so the UI label and the
 /// loaded face cannot disagree.
 pub fn normalize_font_preference(preferred: &str) -> String {
     let preferred = preferred.trim();
     if preferred.is_empty() || preferred == FONT_AUTO {
         return FONT_AUTO.to_owned();
     }
-    if font_catalog()
-        .iter()
-        .any(|font| font.id == preferred && Path::new(font.path).is_file())
-    {
-        preferred.to_owned()
-    } else {
-        FONT_AUTO.to_owned()
+    if let Some(font) = find_font(preferred) {
+        return font.id.clone();
     }
+    // Out-of-scan but still loadable — same contract as resolve_system_font.
+    let path = Path::new(preferred);
+    if path.is_file() && is_font_file(path) {
+        return store_path(path);
+    }
+    FONT_AUTO.to_owned()
 }
 
 pub fn font_label(id: &str) -> String {
     if id == FONT_AUTO {
         return "Auto".to_owned();
     }
-    font_catalog()
-        .iter()
-        .find(|font| font.id == id)
-        .map(|font| font.label.to_owned())
-        .unwrap_or_else(|| id.to_owned())
+    find_font(id)
+        .map(|font| font.label.clone())
+        .unwrap_or_else(|| label_from_path(Path::new(id)))
 }
 
-/// Catalog entries whose files exist on this machine (for the settings picker).
-pub fn available_fonts() -> Vec<&'static FontOption> {
-    font_catalog()
-        .iter()
-        .filter(|font| Path::new(font.path).is_file())
-        .collect()
+/// Every installable typeface found under the OS font directories.
+///
+/// Built once by scanning the system (no fixed face list). Auto is not
+/// included — the settings UI adds it separately.
+pub fn available_fonts() -> &'static [FontOption] {
+    &font_catalog().fonts
 }
 
-/// Full picker catalog (Auto is not listed here — the UI adds it separately).
-fn font_catalog() -> &'static [FontOption] {
-    #[cfg(target_os = "windows")]
-    {
-        &[
-            // Auto chain first (historical order: SimHei → YaHei → SimSun).
-            FontOption {
-                id: "simhei",
-                label: "SimHei",
-                path: r"C:\Windows\Fonts\simhei.ttf",
-            },
-            FontOption {
-                id: "yahei",
-                label: "Microsoft YaHei",
-                path: r"C:\Windows\Fonts\msyh.ttc",
-            },
-            FontOption {
-                id: "simsun",
-                label: "SimSun",
-                path: r"C:\Windows\Fonts\simsun.ttc",
-            },
-            FontOption {
-                id: "kaiu",
-                label: "KaiTi",
-                path: r"C:\Windows\Fonts\simkai.ttf",
-            },
-            FontOption {
-                id: "fangsong",
-                label: "FangSong",
-                path: r"C:\Windows\Fonts\simfang.ttf",
-            },
-            FontOption {
-                id: "segoeui",
-                label: "Segoe UI",
-                path: r"C:\Windows\Fonts\segoeui.ttf",
-            },
-        ]
-    }
-    #[cfg(target_os = "macos")]
-    {
-        &[
-            FontOption {
-                id: "pingfang",
-                label: "PingFang",
-                path: "/System/Library/Fonts/PingFang.ttc",
-            },
-            FontOption {
-                id: "heiti",
-                label: "Heiti",
-                path: "/System/Library/Fonts/STHeiti Light.ttc",
-            },
-            FontOption {
-                id: "songti",
-                label: "Songti",
-                path: "/System/Library/Fonts/Supplemental/Songti.ttc",
-            },
-            FontOption {
-                id: "kaiti",
-                label: "Kaiti",
-                path: "/System/Library/Fonts/Supplemental/Kaiti.ttc",
-            },
-            FontOption {
-                id: "sf-pro",
-                label: "SF Pro",
-                path: "/System/Library/Fonts/SFNS.ttf",
-            },
-        ]
-    }
-    #[cfg(target_os = "linux")]
-    {
-        &[
-            FontOption {
-                id: "noto-cjk",
-                label: "Noto Sans CJK",
-                path: "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-            },
-            FontOption {
-                id: "noto-cjk-tt",
-                label: "Noto Sans CJK (truetype)",
-                path: "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-            },
-            FontOption {
-                id: "wqy-microhei",
-                label: "WenQuanYi Micro Hei",
-                path: "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
-            },
-            FontOption {
-                id: "dejavu",
-                label: "DejaVu Sans",
-                path: "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            },
-        ]
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        &[]
-    }
+fn font_catalog() -> &'static FontCatalog {
+    static CATALOG: OnceLock<FontCatalog> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        let fonts = discover_system_fonts();
+        let mut by_key = HashMap::with_capacity(fonts.len());
+        let mut by_stem: HashMap<String, Vec<usize>> = HashMap::new();
+        for (idx, font) in fonts.iter().enumerate() {
+            by_key.insert(font_path_key(&font.path), idx);
+            if let Some(stem) = Path::new(&font.path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_ascii_lowercase())
+            {
+                by_stem.entry(stem).or_default().push(idx);
+            }
+        }
+        for indices in by_stem.values_mut() {
+            indices.sort_by(|&a, &b| {
+                face_preference_score(&fonts[b].path)
+                    .cmp(&face_preference_score(&fonts[a].path))
+                    .then_with(|| fonts[a].path.cmp(&fonts[b].path))
+            });
+        }
+        FontCatalog {
+            fonts,
+            by_key,
+            by_stem,
+        }
+    })
 }
 
-/// Auto fallback chain only — same order as pre-settings PinkDown.
-fn auto_candidates() -> &'static [FontOption] {
-    #[cfg(target_os = "windows")]
-    {
-        // Original: simhei.ttf → msyh.ttc → simsun.ttc
-        &font_catalog()[..3]
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // Original: PingFang → STHeiti Light
-        &font_catalog()[..2]
-    }
-    #[cfg(target_os = "linux")]
-    {
-        // Original: Noto opentype → Noto truetype
-        &font_catalog()[..2]
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
-    {
-        &[]
-    }
-}
-
-fn resolve_system_font(preferred: &str) -> Option<(&'static str, InstallMode)> {
+/// Resolve a user preference (path, stem, or legacy short id) to a discovered face.
+///
+/// Path-like values only match via [`font_path_key`] (no fuzzy stem fallback).
+/// Bare tokens may match a stem or a legacy short-id mapping.
+fn find_font(preferred: &str) -> Option<&'static FontOption> {
     let preferred = preferred.trim();
     if preferred.is_empty() || preferred == FONT_AUTO {
-        return auto_candidates()
-            .iter()
-            .find(|font| Path::new(font.path).is_file())
-            .map(|font| (font.path, InstallMode::Fallback));
+        return None;
     }
-    font_catalog()
-        .iter()
-        .find(|font| font.id == preferred && Path::new(font.path).is_file())
-        .map(|font| (font.path, InstallMode::Primary))
+    let catalog = font_catalog();
+
+    if let Some(font) = lookup_by_path(catalog, preferred) {
+        return Some(font);
+    }
+
+    // Path-shaped preferences never fall through to stem heuristics — a missed
+    // path key must not silently bind to an unrelated face with the same stem.
+    if looks_like_path(preferred) {
+        return None;
+    }
+
+    let lowered = preferred.to_ascii_lowercase();
+    let needle = strip_font_extension(&lowered);
+    if let Some(font) = lookup_by_stem(catalog, needle) {
+        return Some(font);
+    }
+
+    for stem in legacy_id_stems(preferred) {
+        if let Some(font) = lookup_by_stem(catalog, stem) {
+            return Some(font);
+        }
+    }
+
+    None
+}
+
+fn lookup_by_path<'a>(catalog: &'a FontCatalog, preferred: &str) -> Option<&'a FontOption> {
+    let mut keys = Vec::with_capacity(2);
+    keys.push(font_path_key(preferred));
+    let path = Path::new(preferred);
+    if path.exists() {
+        let stored = store_path(path);
+        let stored_key = font_path_key(&stored);
+        if stored_key != keys[0] {
+            keys.push(stored_key);
+        }
+    }
+    for key in keys {
+        if let Some(&idx) = catalog.by_key.get(&key) {
+            let font = &catalog.fonts[idx];
+            if Path::new(&font.path).is_file() {
+                return Some(font);
+            }
+        }
+    }
+    None
+}
+
+fn lookup_by_stem<'a>(catalog: &'a FontCatalog, stem: &str) -> Option<&'a FontOption> {
+    let key = stem.to_ascii_lowercase();
+    let indices = catalog.by_stem.get(&key)?;
+    indices.iter().find_map(|&idx| {
+        let font = &catalog.fonts[idx];
+        Path::new(&font.path).is_file().then_some(font)
+    })
+}
+
+fn looks_like_path(value: &str) -> bool {
+    value.contains('/')
+        || value.contains('\\')
+        || Path::new(value).is_absolute()
+}
+
+fn strip_font_extension(name: &str) -> &str {
+    name.strip_suffix(".ttf")
+        .or_else(|| name.strip_suffix(".otf"))
+        .or_else(|| name.strip_suffix(".ttc"))
+        .or_else(|| name.strip_suffix(".otc"))
+        .unwrap_or(name)
+}
+
+/// Higher is better when several files share a stem (rare) or when ranking
+/// legacy multi-stem lists after index sort.
+fn face_preference_score(path: &str) -> i32 {
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut score = 0;
+    if stem.contains("bold")
+        || stem.contains("black")
+        || stem.contains("heavy")
+        || stem.ends_with("bd")
+    {
+        score -= 20;
+    }
+    if stem.contains("italic") || stem.contains("oblique") {
+        score -= 10;
+    }
+    if stem.contains("light") || stem.contains("thin") || stem.ends_with('l') && stem.len() > 1 {
+        score -= 5;
+    }
+    if stem.contains("regular") || stem.contains("medium") {
+        score += 5;
+    }
+    score
+}
+
+/// Old settings.json short ids → filenames stems to look up after discovery.
+fn legacy_id_stems(id: &str) -> &'static [&'static str] {
+    match id {
+        "simhei" => &["simhei"],
+        "yahei" => &["msyh", "msyhbd", "msyhl"],
+        "simsun" => &["simsun"],
+        "kaiu" => &["simkai"],
+        "fangsong" => &["simfang"],
+        "segoeui" => &["segoeui"],
+        "pingfang" => &["pingfang", "pingfangui"],
+        "heiti" => &["STHeiti Light", "STHeiti Medium", "stheiti light", "stheiti medium"],
+        "songti" => &["Songti", "songti"],
+        "kaiti" => &["Kaiti", "kaiti"],
+        "sf-pro" => &["SFNS", "SFNSText", "SFNSDisplay", "SFNSRounded", "sfns", "sf-pro"],
+        "noto-cjk" | "noto-cjk-tt" | "noto-sans-cjk" => &[
+            "NotoSansCJK-Regular",
+            "NotoSansSC-Regular",
+            "notosanscjk-regular",
+        ],
+        "wqy-microhei" => &["wqy-microhei"],
+        "dejavu" => &["DejaVuSans", "dejavusans"],
+        _ => &[],
+    }
+}
+
+/// Auto CJK fallback only — not a picker catalog. First existing path wins.
+fn auto_candidate_paths() -> &'static [&'static str] {
+    #[cfg(target_os = "windows")]
+    {
+        &[
+            r"C:\Windows\Fonts\simhei.ttf",
+            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\msyh.ttf",
+            r"C:\Windows\Fonts\simsun.ttc",
+        ]
+    }
+    #[cfg(target_os = "macos")]
+    {
+        &[
+            "/System/Library/Fonts/PingFang.ttc",
+            "/System/Library/Fonts/PingFangUI.ttc",
+            "/System/Library/PrivateFrameworks/FontServices.framework/Resources/Reserved/PingFangUI.ttc",
+            "/System/Library/Fonts/STHeiti Light.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/Supplemental/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        ]
+    }
+    #[cfg(target_os = "linux")]
+    {
+        &[
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        ]
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        &[]
+    }
+}
+
+fn font_search_dirs() -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(windir) = std::env::var("WINDIR") {
+            dirs.push(PathBuf::from(windir).join("Fonts"));
+        } else {
+            dirs.push(PathBuf::from(r"C:\Windows\Fonts"));
+        }
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            dirs.push(
+                PathBuf::from(local)
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Fonts"),
+            );
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        dirs.push(PathBuf::from("/System/Library/Fonts"));
+        dirs.push(PathBuf::from("/System/Library/Fonts/Supplemental"));
+        dirs.push(PathBuf::from("/Library/Fonts"));
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(PathBuf::from(home).join("Library").join("Fonts"));
+        }
+        // Newer macOS keeps some CJK faces here instead of /System/Library/Fonts.
+        dirs.push(PathBuf::from(
+            "/System/Library/PrivateFrameworks/FontServices.framework/Resources/Reserved",
+        ));
+    }
+    #[cfg(target_os = "linux")]
+    {
+        dirs.push(PathBuf::from("/usr/share/fonts"));
+        dirs.push(PathBuf::from("/usr/local/share/fonts"));
+        if let Ok(home) = std::env::var("HOME") {
+            dirs.push(PathBuf::from(&home).join(".local").join("share").join("fonts"));
+            dirs.push(PathBuf::from(home).join(".fonts"));
+        }
+    }
+    dirs
+}
+
+fn is_font_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| {
+            matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "ttf" | "otf" | "ttc" | "otc"
+            )
+        })
+}
+
+/// Faces that are not useful as the main UI typeface.
+fn is_excluded_font_file(path: &Path) -> bool {
+    let name = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name.contains("emoji")
+        || name.contains("lastresort")
+        || name == "seguemj"
+        || name == "seguiemj"
+        || name == "wingdings"
+        || name == "wingdings2"
+        || name == "wingdings3"
+        || name == "webdings"
+        || name == "marlett"
+        || name == "symbol"
+}
+
+fn label_from_path(path: &Path) -> String {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_else(|| {
+            path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("Font")
+        });
+    match stem.to_ascii_lowercase().as_str() {
+        "msyh" => "Microsoft YaHei".to_owned(),
+        "msyhbd" => "Microsoft YaHei Bold".to_owned(),
+        "msyhl" => "Microsoft YaHei Light".to_owned(),
+        "msyhs" => "Microsoft YaHei UI".to_owned(),
+        "simhei" => "SimHei".to_owned(),
+        "simsun" | "simsunb" => "SimSun".to_owned(),
+        "simkai" => "KaiTi".to_owned(),
+        "simfang" => "FangSong".to_owned(),
+        "segoeui" => "Segoe UI".to_owned(),
+        "segoeuib" => "Segoe UI Bold".to_owned(),
+        "seguisb" => "Segoe UI Semibold".to_owned(),
+        "malgun" => "Malgun Gothic".to_owned(),
+        "yugothm" | "yugothr" => "Yu Gothic".to_owned(),
+        "notosanscjk-regular" | "notosanscjksc-regular" => "Noto Sans CJK".to_owned(),
+        "pingfang" | "pingfangui" => "PingFang".to_owned(),
+        "stheiti light" => "Heiti Light".to_owned(),
+        "stheiti medium" => "Heiti Medium".to_owned(),
+        _ => stem.to_owned(),
+    }
+}
+
+fn collect_font_files(dir: &Path, out: &mut Vec<PathBuf>, depth: u8) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            // Nested packages (e.g. /usr/share/fonts/truetype/dejavu).
+            collect_font_files(&path, out, depth - 1);
+        } else if is_font_file(&path) && !is_excluded_font_file(&path) {
+            out.push(path);
+        }
+    }
+}
+
+fn discover_system_fonts() -> Vec<FontOption> {
+    let mut discovered = Vec::new();
+    for dir in font_search_dirs() {
+        collect_font_files(&dir, &mut discovered, 4);
+    }
+    discovered.sort();
+    discovered.dedup();
+
+    let mut fonts = Vec::with_capacity(discovered.len());
+    let mut seen = HashSet::new();
+    for path in discovered {
+        if !path.is_file() {
+            continue;
+        }
+        let load_path = store_path(&path);
+        if !seen.insert(font_path_key(&load_path)) {
+            continue;
+        }
+        // Prefer the store form when it is readable; otherwise fall back to the
+        // pre-canonical path (some environments break on stripped verbatim paths).
+        let load_path = if Path::new(&load_path).is_file() {
+            load_path
+        } else {
+            path.to_string_lossy().into_owned()
+        };
+        fonts.push(FontOption {
+            id: load_path.clone(),
+            label: label_from_path(Path::new(&load_path)),
+            path: load_path,
+        });
+    }
+
+    fonts.sort_by(|a, b| {
+        a.label
+            .to_ascii_lowercase()
+            .cmp(&b.label.to_ascii_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    fonts
+}
+
+/// Absolute path string written to settings and used for `fs::read`.
+///
+/// Canonicalizes when possible and always strips Windows extended-length
+/// (`\\?\`) prefixes so identity comparison and on-disk IO share one form.
+fn store_path(path: &Path) -> String {
+    let absolute = path.canonicalize().unwrap_or_else(|_| {
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map(|cwd| cwd.join(path))
+                .unwrap_or_else(|_| path.to_path_buf())
+        }
+    });
+    strip_verbatim_prefix(&absolute.to_string_lossy())
+}
+
+fn strip_verbatim_prefix(path: &str) -> String {
+    // \\?\UNC\server\share -> \\server\share
+    if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    if let Some(rest) = path.strip_prefix(r"\\?\") {
+        return rest.to_owned();
+    }
+    // Forward-slash variants occasionally appear in mixed tooling.
+    if let Some(rest) = path.strip_prefix("//?/UNC/") {
+        return format!("//{rest}");
+    }
+    if let Some(rest) = path.strip_prefix("//?/") {
+        return rest.to_owned();
+    }
+    path.to_owned()
+}
+
+/// Case- and separator-normalized identity key for font paths.
+fn font_path_key(path: &str) -> String {
+    let stripped = strip_verbatim_prefix(path);
+    #[cfg(target_os = "windows")]
+    {
+        stripped.replace('/', "\\").to_ascii_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        stripped
+    }
+}
+
+fn resolve_system_font(preferred: &str) -> Option<(String, InstallMode)> {
+    let preferred = preferred.trim();
+    if preferred.is_empty() || preferred == FONT_AUTO {
+        return auto_candidate_paths()
+            .iter()
+            .find(|path| Path::new(path).is_file())
+            .map(|path| ((*path).to_owned(), InstallMode::Fallback));
+    }
+    if let Some(font) = find_font(preferred) {
+        return Some((font.path.clone(), InstallMode::Primary));
+    }
+    // Allow a direct path that exists even if discovery missed it.
+    let path = Path::new(preferred);
+    if path.is_file() && is_font_file(path) {
+        return Some((store_path(path), InstallMode::Primary));
+    }
+    None
 }
 
 /// Load egui's bundled fonts (with relaxed line gap) and attach the preferred
@@ -375,7 +689,7 @@ pub fn configure_fonts(ctx: &egui::Context, preferred_font: &str) {
     }
 
     if let Some((path, mode)) = resolve_system_font(preferred_font) {
-        if let Ok(bytes) = fs::read(path) {
+        if let Ok(bytes) = fs::read(&path) {
             let name = "system-ui".to_owned();
             // Single-font TTF/OTF gain the same line gap as bundled faces; TTC
             // collections usually no-op inside patch_line_gap (no top-level hhea).
@@ -611,8 +925,79 @@ mod tests {
     #[test]
     fn normalize_keeps_available_catalog_ids() {
         for font in available_fonts() {
-            assert_eq!(normalize_font_preference(font.id), font.id);
+            assert_eq!(normalize_font_preference(&font.id), font.id);
         }
+    }
+
+    #[test]
+    fn font_path_key_strips_verbatim_prefix_and_normalizes() {
+        assert_eq!(
+            font_path_key(r"\\?\C:\Windows\Fonts\msyh.ttc"),
+            font_path_key(r"C:\Windows\Fonts\msyh.ttc")
+        );
+        assert_eq!(
+            font_path_key(r"\\?\UNC\server\share\font.ttf"),
+            font_path_key(r"\\server\share\font.ttf")
+        );
+        #[cfg(target_os = "windows")]
+        {
+            assert_eq!(
+                font_path_key(r"C:\Windows\Fonts\MSYH.TTC"),
+                font_path_key(r"c:/windows/fonts/msyh.ttc")
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_and_resolve_keep_loadable_path_outside_scan() {
+        let dir = std::env::temp_dir().join(format!(
+            "pinkdown-font-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("custom-out-of-scan.ttf");
+        fs::write(&path, b"not a real sfnt").expect("write temp font stub");
+
+        let preferred = path.to_string_lossy();
+        let normalized = normalize_font_preference(&preferred);
+        assert_ne!(
+            normalized, FONT_AUTO,
+            "loadable path outside scan must not collapse to Auto"
+        );
+        assert!(
+            Path::new(&normalized).is_file(),
+            "normalized id must remain a readable path"
+        );
+
+        let resolved = resolve_system_font(&normalized).expect("out-of-scan path resolves");
+        assert_eq!(resolved.1, InstallMode::Primary);
+        assert!(Path::new(&resolved.0).is_file());
+
+        // Path-like garbage must not stem-match into a real system face.
+        assert_eq!(
+            normalize_font_preference(r"C:\definitely\missing\msyh.ttc"),
+            FONT_AUTO
+        );
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn plain_path_matches_catalog_entry_via_path_key() {
+        let Some(font) = available_fonts().first() else {
+            return;
+        };
+        // Re-key through a slightly different string form when possible.
+        let key_match = available_fonts()
+            .iter()
+            .find(|f| font_path_key(&f.path) == font_path_key(&font.path));
+        assert!(key_match.is_some());
+        assert_eq!(
+            normalize_font_preference(&font.path),
+            font.id,
+            "catalog path must normalize back to stored id"
+        );
     }
 
     #[test]
@@ -625,10 +1010,10 @@ mod tests {
 
     #[test]
     fn explicit_available_font_resolves_as_primary() {
-        let Some(font) = available_fonts().into_iter().next() else {
+        let Some(font) = available_fonts().first() else {
             return;
         };
-        let resolved = resolve_system_font(font.id).expect("available font resolves");
+        let resolved = resolve_system_font(&font.id).expect("available font resolves");
         assert_eq!(resolved.0, font.path);
         assert_eq!(resolved.1, InstallMode::Primary);
     }
@@ -639,13 +1024,77 @@ mod tests {
     }
 
     #[test]
-    fn auto_candidate_order_matches_historical_chain() {
-        let auto_ids: Vec<&str> = auto_candidates().iter().map(|f| f.id).collect();
+    fn auto_candidate_paths_prefer_historical_cjk_chain() {
+        let paths = auto_candidate_paths();
+        assert!(!paths.is_empty());
         #[cfg(target_os = "windows")]
-        assert_eq!(auto_ids, ["simhei", "yahei", "simsun"]);
+        {
+            assert!(paths[0].ends_with("simhei.ttf"));
+            assert!(paths.iter().any(|p| p.contains("msyh")));
+            assert!(paths.iter().any(|p| p.contains("simsun")));
+        }
         #[cfg(target_os = "macos")]
-        assert_eq!(auto_ids, ["pingfang", "heiti"]);
+        {
+            assert!(paths.iter().any(|p| p.contains("PingFang")));
+            assert!(paths.iter().any(|p| p.contains("STHeiti")));
+        }
         #[cfg(target_os = "linux")]
-        assert_eq!(auto_ids, ["noto-cjk", "noto-cjk-tt"]);
+        {
+            assert!(paths.iter().any(|p| p.contains("NotoSansCJK")));
+        }
+    }
+
+    #[test]
+    fn discovery_lists_installed_system_fonts_not_a_fixed_catalog() {
+        let fonts = available_fonts();
+        assert!(
+            !fonts.is_empty() || font_search_dirs().iter().all(|d| !d.is_dir()),
+            "expected scanned fonts when system font directories exist"
+        );
+        for font in fonts {
+            assert!(
+                Path::new(&font.path).is_file(),
+                "listed font missing on disk: {} ({})",
+                font.id,
+                font.path
+            );
+            assert_eq!(font.id, font.path, "id is the loadable absolute path");
+            assert!(!font.label.is_empty());
+        }
+        // Must not be limited to the old 5–6 hardcoded faces.
+        #[cfg(any(target_os = "windows", target_os = "macos"))]
+        assert!(
+            fonts.len() > 10,
+            "expected a broad system scan, got only {} fonts",
+            fonts.len()
+        );
+    }
+
+    #[test]
+    fn legacy_short_ids_still_resolve_when_files_exist() {
+        #[cfg(target_os = "windows")]
+        {
+            if Path::new(r"C:\Windows\Fonts\simhei.ttf").is_file() {
+                let id = normalize_font_preference("simhei");
+                assert_ne!(id, FONT_AUTO);
+                assert!(Path::new(&id).is_file());
+            }
+            if Path::new(r"C:\Windows\Fonts\msyh.ttc").is_file() {
+                let id = normalize_font_preference("yahei");
+                assert_ne!(id, FONT_AUTO);
+            }
+        }
+        #[cfg(target_os = "macos")]
+        {
+            // Any discovered PingFang* file should map from the legacy id.
+            if available_fonts().iter().any(|f| {
+                Path::new(&f.path)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .is_some_and(|s| s.to_ascii_lowercase().contains("pingfang"))
+            }) {
+                assert_ne!(normalize_font_preference("pingfang"), FONT_AUTO);
+            }
+        }
     }
 }
