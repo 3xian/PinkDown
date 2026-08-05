@@ -14,19 +14,21 @@ PinkDown is a fast, sleek, native split-pane Markdown editor and reader for Wind
 
 - Side-by-side Markdown source and rendered preview
 - Open, save, and save-as support for `.md`, `.markdown`, `.mdx`, and `.txt` files
+- Export to self-contained HTML, or to PDF via a system Chromium browser (Edge / Chrome)
 - Clear unsaved-change indicator and familiar `Ctrl/Cmd + O` / `Ctrl/Cmd + S` / `Ctrl/Cmd + Shift + S` shortcuts
 - Choose a system typeface for the UI and preview (persisted across launches)
 - Markdown rendering for headings, emphasis, links, inline and fenced code, lists, task items, block quotes, dividers, and tables
 - UTF-8 and UTF-16 file decoding with encoding feedback in the status bar
 - Native, resizable Windows window with drag-and-drop file opening
-- GitHub-based update check and install for Windows x64 releases
+- GitHub-based update check and install for Windows and macOS releases
 
 ## Using PinkDown
 
 1. Launch the application and write in the left pane; the preview on the right updates as you type.
 2. Select **Open** or drag a Markdown file into the window to edit an existing document.
 3. Select **Save** to write changes to the current file, or **Save as** to choose a new location.
-4. Use **Check updates** to compare the installed version against the latest GitHub tag. If a newer release is available, PinkDown asks for confirmation first. Choosing **Update** downloads the release package, verifies its published SHA-256 checksum, and installs it after PinkDown closes (Windows setup EXE; macOS DMG → replace `PinkDown.app`).
+4. Select **Export** to save the document as HTML or PDF. HTML is self-contained and ready to open in a browser; PDF uses a headless Chromium-based browser on your machine (Microsoft Edge or Google Chrome) so the print layout matches the HTML export. Relative images resolve from the open file’s folder. PDF export runs in the background and reports progress in the status bar.
+5. Use **Check updates** to compare the installed version against the latest GitHub tag. If a newer release is available, PinkDown asks for confirmation first. Choosing **Update** downloads the release package, verifies its published SHA-256 checksum, and installs it after PinkDown closes (Windows setup EXE; macOS DMG → replace `PinkDown.app`).
 
 The Windows installer installs PinkDown for the current user and registers it as a Markdown handler. Keep the file-association option selected during setup; Windows will open PinkDown's Default Apps page so you can confirm it for `.md` files. Windows requires this system confirmation when another default app is already set.
 

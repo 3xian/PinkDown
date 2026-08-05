@@ -109,6 +109,22 @@ impl Document {
             .map_or_else(|| "Untitled".to_owned(), display_name)
     }
 
+    /// Directory of the open file, used to resolve relative export assets.
+    pub fn base_dir(&self) -> Option<&Path> {
+        self.path.as_deref().and_then(Path::parent)
+    }
+
+    /// File stem for export dialogs (`notes.md` → `notes`, untitled → `untitled`).
+    pub fn export_stem(&self) -> String {
+        let name = self.display_name();
+        Path::new(&name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("untitled")
+            .to_owned()
+    }
+
     /// Window title bar / taskbar text; `None` while no file is open.
     /// A dirty document gets a trailing `*` marker.
     pub fn window_title(&self) -> Option<String> {

@@ -6,6 +6,7 @@ use egui_commonmark::CommonMarkCache;
 use crate::{
     dialog::{self, Choice, FontSettingsAction, UpdateChoice, UpdatePromptMode},
     document::{pick_markdown_file, Document},
+    export::{self, ExportFormat, ExportJob, ExportPoll},
     preview,
     settings::Settings,
     theme::{self, BASE, FOAM, GOLD, HIGHLIGHT_LOW, IRIS, MUTED, ROSE, SUBTLE, SURFACE, TEXT},
@@ -32,6 +33,7 @@ pub struct PinkDown {
     markdown_cache: CommonMarkCache,
     update_checker: UpdateChecker,
     update_ui: UpdateUi,
+    export_job: ExportJob,
     current_title: String,
     settings: Settings,
     /// Open font dialog; holds a draft typeface id until Apply / Cancel.
@@ -74,6 +76,7 @@ impl PinkDown {
             markdown_cache: CommonMarkCache::default(),
             update_checker: UpdateChecker::default(),
             update_ui: UpdateUi::Idle,
+            export_job: ExportJob::default(),
             current_title: "PinkDown".into(),
             settings,
             font_settings_draft: None,
@@ -160,6 +163,54 @@ impl PinkDown {
                 self.status = error;
                 false
             }
+        }
+    }
+
+    fn export_document(&mut self, format: ExportFormat) {
+        if self.export_job.is_busy() {
+            self.status = "An export is already in progress\u{2026}".into();
+            return;
+        }
+
+        let title = self.document.export_stem();
+        let base_dir = self.document.base_dir().map(PathBuf::from);
+
+        match format {
+            ExportFormat::Html => match export::export_html(
+                &self.document.text,
+                &title,
+                base_dir.as_deref(),
+            ) {
+                Ok(Some(path)) => self.status = format!("Exported {}", file_name_label(&path)),
+                Ok(None) => {}
+                Err(error) => self.status = error,
+            },
+            ExportFormat::Pdf => {
+                let Some(path) = export::pick_destination(&title, ExportFormat::Pdf) else {
+                    return;
+                };
+                if self.export_job.start_pdf(
+                    path,
+                    self.document.text.clone(),
+                    title,
+                    base_dir,
+                ) {
+                    self.status = "Exporting PDF\u{2026}".into();
+                } else {
+                    self.status = "An export is already in progress\u{2026}".into();
+                }
+            }
+        }
+    }
+
+    fn poll_export(&mut self, ctx: &egui::Context) {
+        match self.export_job.poll() {
+            ExportPoll::Idle => {}
+            ExportPoll::Pending => ctx.request_repaint_after(Duration::from_millis(100)),
+            ExportPoll::Ready(Ok(path)) => {
+                self.status = format!("Exported {}", file_name_label(&path));
+            }
+            ExportPoll::Ready(Err(error)) => self.status = error,
         }
     }
 
@@ -337,6 +388,7 @@ impl eframe::App for PinkDown {
 
         self.check_close_request(ctx);
         self.poll_update(ctx);
+        self.poll_export(ctx);
         self.handle_inputs(ctx);
         self.sync_window_title(ctx);
         paint_window_shell(ctx);
@@ -436,6 +488,25 @@ impl PinkDown {
                     {
                         self.font_settings_draft = Some(self.settings.preferred_font.clone());
                     }
+
+                    let export_response = toolbar_button(ui, "Export", 60.0)
+                        .on_hover_text("Export the document as HTML or PDF");
+                    egui::Popup::menu(&export_response).show(|ui| {
+                        ui.set_min_width(148.0);
+                        if ui
+                            .add(egui::Button::new(RichText::new("Export as HTML").size(12.0)))
+                            .clicked()
+                        {
+                            self.export_document(ExportFormat::Html);
+                        }
+                        if ui
+                            .add(egui::Button::new(RichText::new("Export as PDF").size(12.0)))
+                            .clicked()
+                        {
+                            self.export_document(ExportFormat::Pdf);
+                        }
+                    });
+
                     if toolbar_button(ui, "Check updates", 96.0)
                         .on_hover_text("Check GitHub Releases for a newer version")
                         .clicked()
@@ -514,6 +585,12 @@ impl PinkDown {
     }
 }
 
+fn file_name_label(path: &std::path::Path) -> &str {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("file")
+}
+
 /// Load preferences and coerce any stale typeface id back to Auto.
 fn load_settings() -> Settings {
     let mut settings = Settings::load();
@@ -542,9 +619,10 @@ fn toolbar_button(ui: &mut egui::Ui, label: &str, width: f32) -> egui::Response 
             visuals.weak_bg_fill = Color32::TRANSPARENT;
             visuals.bg_stroke = egui::Stroke::NONE;
         }
-        widgets.inactive.fg_stroke.color = SUBTLE;
-        widgets.hovered.fg_stroke.color = FOAM;
-        widgets.active.fg_stroke.color = IRIS;
+        // Stay in the muted gray-violet ladder so toolbar chrome stays quiet.
+        widgets.inactive.fg_stroke.color = MUTED;
+        widgets.hovered.fg_stroke.color = SUBTLE;
+        widgets.active.fg_stroke.color = TEXT;
 
         ui.add_sized(
             [width, 30.0],

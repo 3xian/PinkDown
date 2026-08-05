@@ -3,6 +3,7 @@
 mod app;
 mod dialog;
 mod document;
+mod export;
 mod preview;
 mod settings;
 mod theme;

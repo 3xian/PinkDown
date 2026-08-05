@@ -1,6 +1,6 @@
 [package]
 name = "pinkdown"
-version = "1.5.0"
+version = "1.6.0"
 edition = "2021"
 authors = ["PinkDown"]
 description = "A polished, native Markdown reader and editor in Rust."
@@ -12,7 +12,7 @@ encoding_rs = "0.8"
 eframe = { version = "0.32", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 egui_commonmark = { path = "vendor/egui_commonmark", default-features = false, features = ["pulldown_cmark"] }
 image = { version = "0.25.9", default-features = false, features = ["png"] }
-pulldown-cmark = { version = "0.13", default-features = false }
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 rfd = "0.15"
 semver = "1"
 serde = { version = "1", features = ["derive"] }
