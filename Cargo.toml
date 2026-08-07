@@ -1,6 +1,6 @@
 [package]
 name = "pinkdown"
-version = "1.7.0"
+version = "1.8.0"
 edition = "2021"
 authors = ["PinkDown"]
 description = "A polished, native Markdown reader and editor in Rust."
@@ -34,7 +34,6 @@ raw-window-handle = "0.6"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
-    "Win32_UI_WindowsAndMessaging",
 ] }
 
 [profile.release]

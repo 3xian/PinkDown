@@ -38,8 +38,6 @@ pub struct PinkDown {
     settings: Settings,
     /// Open font dialog; holds a draft typeface id until Apply / Cancel.
     font_settings_draft: Option<String>,
-    #[cfg(target_os = "windows")]
-    native_frame_passes: u8,
 }
 
 enum PendingAction {
@@ -80,8 +78,6 @@ impl PinkDown {
             current_title: "PinkDown".into(),
             settings,
             font_settings_draft: None,
-            #[cfg(target_os = "windows")]
-            native_frame_passes: 0,
         };
         if let Some(path) = initial_path {
             app.open_path(path);
@@ -385,11 +381,9 @@ impl PinkDown {
 
 impl eframe::App for PinkDown {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // Before main UI so edge interact zones share the same hit-test pass as the toolbar.
         #[cfg(target_os = "windows")]
-        if self.native_frame_passes < 4 && crate::window::configure_native_window(frame) {
-            self.native_frame_passes += 1;
-            ctx.request_repaint_after(Duration::from_millis(80));
-        }
+        crate::window::frame_chrome(ctx, frame);
         #[cfg(not(target_os = "windows"))]
         let _ = frame;
 
