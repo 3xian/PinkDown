@@ -502,6 +502,7 @@ impl CommonMarkViewerInternal {
                     / column_count as f32)
                     .max(72.0);
 
+            let body_count = rows.len();
             egui::Frame::new()
                 .fill(ui.visuals().faint_bg_color)
                 .corner_radius(egui::CornerRadius::same(7))
@@ -511,7 +512,16 @@ impl CommonMarkViewerInternal {
                     ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 0.0;
                         self.table_row(
-                            ui, header, cache, options, max_width, cell_width, gap, true, false,
+                            ui,
+                            header,
+                            cache,
+                            options,
+                            max_width,
+                            cell_width,
+                            gap,
+                            true,
+                            false,
+                            body_count == 0,
                         );
                         for (row_index, row) in rows.into_iter().enumerate() {
                             self.table_row(
@@ -524,6 +534,7 @@ impl CommonMarkViewerInternal {
                                 gap,
                                 false,
                                 row_index % 2 == 1,
+                                row_index + 1 == body_count,
                             );
                         }
                     });
@@ -550,18 +561,39 @@ impl CommonMarkViewerInternal {
         gap: f32,
         is_header: bool,
         is_alternate: bool,
+        is_last: bool,
     ) {
+        // Header uses noninteractive weak fill (preview sets a soft elevation).
         let fill = if is_header {
-            ui.visuals().widgets.hovered.bg_fill
+            ui.visuals().widgets.noninteractive.weak_bg_fill
         } else if is_alternate {
             ui.visuals().faint_bg_color
         } else {
             ui.visuals().widgets.noninteractive.bg_fill
         };
 
+        // Nest inside the outer table frame (radius 7); square edges where rows meet.
+        const ROW_RADIUS: u8 = 6;
+        let corner_radius = match (is_header, is_last) {
+            (true, true) => egui::CornerRadius::same(ROW_RADIUS),
+            (true, false) => egui::CornerRadius {
+                nw: ROW_RADIUS,
+                ne: ROW_RADIUS,
+                sw: 0,
+                se: 0,
+            },
+            (false, true) => egui::CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: ROW_RADIUS,
+                se: ROW_RADIUS,
+            },
+            (false, false) => egui::CornerRadius::ZERO,
+        };
+
         egui::Frame::new()
             .fill(fill)
-            .corner_radius(egui::CornerRadius::same(if is_header { 6 } else { 2 }))
+            .corner_radius(corner_radius)
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());

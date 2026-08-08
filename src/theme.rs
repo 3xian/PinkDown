@@ -110,6 +110,8 @@ pub fn configure_preview(ui: &mut egui::Ui) {
     style.visuals.extreme_bg_color = SURFACE;
     style.visuals.code_bg_color = HIGHLIGHT_MED;
     style.visuals.faint_bg_color = HIGHLIGHT_LOW;
+    // Soft table-header elevation (egui_commonmark reads noninteractive.weak_bg_fill).
+    style.visuals.widgets.noninteractive.weak_bg_fill = OVERLAY;
     style.visuals.widgets.open.fg_stroke.color = IRIS;
     style.text_styles.insert(
         egui::TextStyle::Body,
